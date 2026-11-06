@@ -57,6 +57,8 @@ TG_BOT_TOKEN=""
 TG_CHAT_ID=""
 DIRECT_SERVICES_CHOICE=""
 CASCADE_SERVICES_CHOICE=""
+SUB_TITLE=""
+DEFAULT_SUB_TITLE=""
 
 # Script arguments / defaults
 domain=""
@@ -248,6 +250,7 @@ setup_telegram_backup() {
     cat > "/etc/x-ui/telegram_backup.conf" << EOF
 TG_BOT_TOKEN="${TG_BOT_TOKEN}"
 TG_CHAT_ID="${TG_CHAT_ID}"
+SUB_TITLE="${SUB_TITLE}"
 EOF
     chmod 600 /etc/x-ui/telegram_backup.conf
 
@@ -306,7 +309,7 @@ if [[ -f "/etc/x-ui/x-ui.db" ]]; then
 fi
 
 # 4. Compose Report
-REPORT="📊 *Еженедельный отчет: Мой сервер*
+REPORT="📊 *Еженедельный отчет: ${SUB_TITLE:-OmniStack}*
 ━━━━━━━━━━━━━━━━━━
 🗓 *Дата:* $(date '+%d.%m.%Y %H:%M %Z')
 🌐 *Сервер:* \`${IP}\` (${HOSTNAME})
@@ -1188,6 +1191,7 @@ while [ "$#" -gt 0 ]; do
         -ONLY_CF_IP_ALLOW) CFALLOW="$2"; shift 2;;
         -tg_token)         TG_BOT_TOKEN="$2"; shift 2;;
         -tg_id)            TG_CHAT_ID="$2"; shift 2;;
+        -sub_title|-sub-title|--sub-title) SUB_TITLE="$2"; shift 2;;
         -check|--check)    CHECK_SERVICES="y"; shift 1;;
         -scan|--scan)      SCAN_REALITY_ONLY="y"; shift 1;;
         -backup|--backup)  RUN_BACKUP_NOW="y"; shift 1;;
@@ -1443,18 +1447,34 @@ IP4=$(ip route get 8.8.8.8 2>&1 | grep -Po -- 'src \K\S*' || true)
 msg_ok "Server Public IPv4: $IP4"
 
 # Detect Server Country and Location Flag
-detect_server_flag() {
+detect_server_country_code() {
     local cc
     cc=$(curl -s4 -m 3 https://ipinfo.io/country 2>/dev/null || curl -s4 -m 3 https://ifconfig.co/country-iso 2>/dev/null || echo "RU")
     cc=$(echo "$cc" | tr -d ' \r\n' | tr '[:lower:]' '[:upper:]')
     if [[ ${#cc} -eq 2 && "$cc" =~ ^[A-Z]{2}$ ]]; then
-        python3 -c "import sys; print(''.join(chr(127397 + ord(c)) for c in sys.argv[1]))" "$cc" 2>/dev/null || echo "🌐"
+        echo "$cc"
     else
-        echo "🌐"
+        echo "RU"
     fi
 }
-SERVER_FLAG=$(detect_server_flag)
-msg_ok "Server Location Flag: ${SERVER_FLAG}"
+SERVER_COUNTRY=$(detect_server_country_code)
+SERVER_FLAG=$(python3 -c "import sys; print(''.join(chr(127397 + ord(c)) for c in sys.argv[1]))" "$SERVER_COUNTRY" 2>/dev/null || echo "🌐")
+msg_ok "Server Location: ${SERVER_FLAG} [${SERVER_COUNTRY}]"
+
+DEFAULT_SUB_TITLE="[${SERVER_COUNTRY}] - VPS - OmniStack"
+
+if [[ -z "$SUB_TITLE" ]]; then
+    if [[ -t 0 ]]; then
+        echo ""
+        echo -e "${BOLD}${CYAN}Настройка названия подписки и профиля клиента:${NC}"
+        echo -e "Будет отображаться в приложениях (Happ, Incy, Clash/Mihomo) и на веб-портале."
+        read -rp "Введите название подписки [Enter = '${DEFAULT_SUB_TITLE}']: " user_sub_title
+        SUB_TITLE="${user_sub_title:-$DEFAULT_SUB_TITLE}"
+    else
+        SUB_TITLE="$DEFAULT_SUB_TITLE"
+    fi
+fi
+msg_ok "Название подписки: ${SUB_TITLE}"
 
 # Configure Swap if missing
 setup_swap
@@ -2204,8 +2224,9 @@ for s in extra_proxy:
     if s not in proxy_sites:
         proxy_sites.append(s)
 
+routing_sub_title = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else "OmniStack"
 routing_obj = {
-    "Name": "Мой сервер - Direct RU",
+    "Name": f"{routing_sub_title} - Direct RU",
     "GlobalProxy": "true",
     "RouteOrder": "block-direct-proxy",
     "DomainStrategy": "IPIfNonMatch",
@@ -2241,7 +2262,7 @@ routing_obj = {
 
 raw_json = json.dumps(routing_obj, separators=(",", ":"), ensure_ascii=False)
 print(base64.b64encode(raw_json.encode("utf-8")).decode("utf-8"))
-' "$DIRECT_SERVICES_CHOICE" "$CASCADE_SERVICES_CHOICE")
+' "$DIRECT_SERVICES_CHOICE" "$CASCADE_SERVICES_CHOICE" "$SUB_TITLE")
 HAPP_ROUTING_RULE="happ://routing/onadd/${ROUTING_B64}"
 INCY_ROUTING_RULE="incy://routing/onadd/${ROUTING_B64}"
 
@@ -2259,8 +2280,8 @@ INSERT INTO "settings" ("key", "value") VALUES ("subJsonPath", '${json_path}');
 INSERT INTO "settings" ("key", "value") VALUES ("subJsonURI", '${json_uri}');
 INSERT INTO "settings" ("key", "value") VALUES ("subEnable", 'true');
 INSERT INTO "settings" ("key", "value") VALUES ("subEncrypt", 'true');
-INSERT INTO "settings" ("key", "value") VALUES ("subTitle", 'Мой сервер');
-INSERT INTO "settings" ("key", "value") VALUES ("subAnnounce", 'Мой сервер');
+INSERT INTO "settings" ("key", "value") VALUES ("subTitle", '${SUB_TITLE}');
+INSERT INTO "settings" ("key", "value") VALUES ("subAnnounce", '${SUB_TITLE}');
 INSERT INTO "settings" ("key", "value") VALUES ("subClashEnable", 'true');
 INSERT INTO "settings" ("key", "value") VALUES ("subClashPath", '/clash/');
 INSERT INTO "settings" ("key", "value") VALUES ("subClashURI", 'https://${domain}/clash/');
@@ -2293,13 +2314,13 @@ INSERT INTO "settings" ("key", "value") VALUES ("subRoutingRules", '${HAPP_ROUTI
 INSERT INTO "settings" ("key", "value") VALUES ("subHappAutoDetect", 'true');
 INSERT INTO "settings" ("key", "value") VALUES ("subHappAutoConnect", 'lowest_delay');
 INSERT INTO "settings" ("key", "value") VALUES ("subHappAutoConnectType", 'tcp');
-INSERT INTO "settings" ("key", "value") VALUES ("subHappSubInfoText", 'Мой сервер');
+INSERT INTO "settings" ("key", "value") VALUES ("subHappSubInfoText", '${SUB_TITLE}');
 INSERT INTO "settings" ("key", "value") VALUES ("subHappSubInfoColor", 'blue');
 INSERT INTO "settings" ("key", "value") VALUES ("subHappColorProfile", 'blue');
 INSERT INTO "settings" ("key", "value") VALUES ("subHappTunMode", 'system');
 INSERT INTO "settings" ("key", "value") VALUES ("subIncyAppAutoDetect", 'true');
-INSERT INTO "settings" ("key", "value") VALUES ("subIncyProfileDescription", 'Мой сервер');
-INSERT INTO "settings" ("key", "value") VALUES ("subIncyBannerText", 'Мой сервер');
+INSERT INTO "settings" ("key", "value") VALUES ("subIncyProfileDescription", '${SUB_TITLE}');
+INSERT INTO "settings" ("key", "value") VALUES ("subIncyBannerText", '${SUB_TITLE}');
 INSERT INTO "settings" ("key", "value") VALUES ("subIncyBannerBgColor", '#1e293b');
 INSERT INTO "settings" ("key", "value") VALUES ("subIncyBannerButtonText", 'Подключено');
 INSERT INTO "settings" ("key", "value") VALUES ("subIncyBannerButtonColor", '#3b82f6');
@@ -2864,6 +2885,7 @@ if [[ -f "$SCRIPT_DIR/sub-3x-ui.html" ]]; then
 else
     wget -q -O "/var/www/subpage/index.html" "${GITHUB_RAW}/sub-3x-ui.html" 2>/dev/null || true
 fi
+sed -i "s|Мой сервер|${SUB_TITLE}|g" "/var/www/subpage/index.html" 2>/dev/null || true
 
 if [[ ! -s "/var/www/subpage/index.html" ]]; then
     cat > "/var/www/subpage/index.html" << EOF
@@ -3107,7 +3129,7 @@ URL:      https://${domain}/${panel_path}/
 Username: ${config_username}
 Password: ${config_password}
 
---- 2. UNIFIED CLIENT SUBSCRIPTIONS (${CLIENT_EMAIL}) ---
+--- 2. UNIFIED CLIENT SUBSCRIPTIONS (${CLIENT_EMAIL} - ${SUB_TITLE}) ---
 Web Portal: https://${domain}/${web_path}?name=${CLIENT_SUB_ID}
 Base Sub:   https://${domain}/${sub_path}/${CLIENT_SUB_ID}
 Clash Meta: https://${domain}/${web_path}/clashmeta/${CLIENT_SUB_ID}
@@ -3141,6 +3163,7 @@ echo -e "${BOLD}Server Role:${NC}      ${CYAN}${SERVER_ROLE^^}${NC}"
 echo -e "${BOLD}Domain:${NC}           ${CYAN}${domain}${NC}"
 echo -e "${BOLD}Server IPv4:${NC}      ${CYAN}${IP4}${NC}"
 echo -e "${BOLD}Unified Client:${NC}   ${CYAN}${CLIENT_EMAIL}${NC}"
+echo -e "${BOLD}Subscription:${NC}     ${CYAN}${SUB_TITLE}${NC}"
 echo -e ""
 echo -e "${BOLD}${YELLOW}🔒 3X-UI Admin Web Panel:${NC}"
 echo -e "   URL:      ${BOLD}https://${domain}/${panel_path}/${NC}"
