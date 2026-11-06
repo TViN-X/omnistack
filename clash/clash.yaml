@@ -1,0 +1,134 @@
+mixed-port: 7890
+allow-lan: false
+log-level: info
+ipv6: false
+
+mode: rule
+dns:
+  enable: true
+  use-hosts: true
+  ipv6: false
+  enhanced-mode: redir-host
+  listen: 127.0.0.1:6868
+  default-nameserver:
+    - 1.1.1.1
+    - 8.8.8.8
+    - 1.0.0.1
+  nameserver:
+    - https://1.1.1.1/dns-query#PROXY
+    - https://8.8.8.8/dns-query#PROXY
+    - https://1.0.0.1/dns-query#PROXY
+    - 8.8.8.8
+    - 1.1.1.1
+
+profile:
+  name: "Мой сервер"
+  store-selected: true
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - auto
+    use:
+      - sub
+
+  - name: auto
+    type: url-test
+    url: http://cp.cloudflare.com
+    interval: 300
+    tolerance: 150
+    lazy: true
+    use:
+      - sub
+
+proxy-providers:
+  sub:
+    type: http
+    url: https://${DOMAIN}/${SUB_PATH}/<!--# echo var="subid" -->
+    path: ./proxy_providers/base64.yml
+    interval: 3600
+    health-check:
+      enable: true
+      url: https://www.gstatic.com/generate_204
+      interval: 300
+      timeout: 5000
+      lazy: true
+      expected-status: 204
+
+rule-providers:
+  geosite-ads:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ads-all.mrs
+    path: ./rule_providers/geosite-ads.mrs
+    interval: 86400
+  geosite-ru:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ru.mrs
+    path: ./rule_providers/geosite-ru.mrs
+    interval: 86400
+  geoip-ru:
+    type: http
+    behavior: ipcidr
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/ru.mrs
+    path: ./rule_providers/geoip-ru.mrs
+    interval: 86400
+
+rules:
+  # 1. Локальные адреса
+  - GEOIP,private,DIRECT,no-resolve
+
+  # 2. Блокировка рекламы, баннеров и трекеров (AdBlock)
+  - RULE-SET,geosite-ads,REJECT
+  - GEOSITE,category-ads-all,REJECT
+
+  # 3. Российские доменные зоны, порталы, банки и сервисы -> DIRECT
+  - DOMAIN-SUFFIX,ru,DIRECT
+  - DOMAIN-SUFFIX,su,DIRECT
+  - DOMAIN-SUFFIX,xn--p1ai,DIRECT
+  - DOMAIN-SUFFIX,gosuslugi.ru,DIRECT
+  - DOMAIN-SUFFIX,sberbank.ru,DIRECT
+  - DOMAIN-SUFFIX,tinkoff.ru,DIRECT
+  - DOMAIN-SUFFIX,t-bank.ru,DIRECT
+  - DOMAIN-SUFFIX,vtb.ru,DIRECT
+  - DOMAIN-SUFFIX,alfabank.ru,DIRECT
+  - DOMAIN-SUFFIX,yandex.ru,DIRECT
+  - DOMAIN-SUFFIX,ya.ru,DIRECT
+  - DOMAIN-SUFFIX,vk.com,DIRECT
+  - DOMAIN-SUFFIX,vk.ru,DIRECT
+  - DOMAIN-SUFFIX,mail.ru,DIRECT
+  - DOMAIN-SUFFIX,avito.ru,DIRECT
+  - DOMAIN-SUFFIX,ozon.ru,DIRECT
+  - DOMAIN-SUFFIX,wildberries.ru,DIRECT
+  - DOMAIN-SUFFIX,kinopoisk.ru,DIRECT
+  - RULE-SET,geosite-ru,DIRECT
+  - RULE-SET,geoip-ru,DIRECT,no-resolve
+  - GEOIP,RU,DIRECT
+
+  # 3. Весь остальной трафик -> через PROXY
+  - MATCH,PROXY
+
+sniffer:
+  enable: true
+  force-dns-mapping: true
+  parse-pure-ip: true
+  sniff:
+    HTTP:
+      ports: [80, 8080-8880]
+      override-destination: true
+    TLS:
+      ports: [443, 8443]
+
+tun:
+  enable: true
+  stack: system
+  dns-hijack:
+    - any:53
+  auto-redir: true
+  auto-route: true
+  auto-detect-interface: true
