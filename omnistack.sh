@@ -1853,7 +1853,7 @@ CUSTOM_DIRECT_RULE=""
 [[ -n "$CUSTOM_DIRECT_DOMAINS" ]] && CUSTOM_DIRECT_RULE="{\"type\": \"field\", \"domain\": [${CUSTOM_DIRECT_DOMAINS}], \"outboundTag\": \"direct\"},"
 
 CUSTOM_CASCADE_RULE=""
-[[ -n "$CUSTOM_CASCADE_DOMAINS" ]] && CUSTOM_CASCADE_RULE="{\"type\": \"field\", \"domain\": [${CUSTOM_CASCADE_DOMAINS}], \"outboundTag\": \"cascade-out\"},"
+[[ -n "$CUSTOM_CASCADE_DOMAINS" ]] && CUSTOM_CASCADE_RULE="{\"type\": \"field\", \"domain\": [${CUSTOM_CASCADE_DOMAINS}], \"outboundTag\": \"cascade-eu\"},"
 
 ADDITIONAL_CLASH_RULES=""
 if [[ -n "$DIRECT_SERVICES_CHOICE" ]]; then
@@ -2101,6 +2101,45 @@ fi
 if [[ "$SERVER_ROLE" == "exit" ]]; then
     # Europe Exit Node: Block .RU zone, Russian IPs and torrents to prevent foreign IP de-anonymization
     XRAY_TEMPLATE_CONFIG='{
+  "api": {
+    "services": [
+      "HandlerService",
+      "LoggerService",
+      "StatsService",
+      "RoutingService"
+    ],
+    "tag": "api"
+  },
+  "stats": {},
+  "policy": {
+    "levels": {
+      "0": {
+        "statsUserDownlink": true,
+        "statsUserUplink": true
+      }
+    },
+    "system": {
+      "statsInboundDownlink": true,
+      "statsInboundUplink": true,
+      "statsOutboundDownlink": false,
+      "statsOutboundUplink": false
+    }
+  },
+  "metrics": {
+    "listen": "127.0.0.1:11111",
+    "tag": "metrics_out"
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 62789,
+      "protocol": "tunnel",
+      "settings": {
+        "rewriteAddress": "127.0.0.1"
+      },
+      "tag": "api"
+    }
+  ],
   "log": {"loglevel": "warning"},
   "dns": {
     "servers": [
@@ -2141,6 +2180,45 @@ elif [[ "$SERVER_ROLE" == "cascade" ]]; then
     # Russia Cascade Node: Split-Routing
     # .RU and Russian IPs go DIRECT. Everything else tunnels to EU exit node!
     XRAY_TEMPLATE_CONFIG="{
+  \"api\": {
+    \"services\": [
+      \"HandlerService\",
+      \"LoggerService\",
+      \"StatsService\",
+      \"RoutingService\"
+    ],
+    \"tag\": \"api\"
+  },
+  \"stats\": {},
+  \"policy\": {
+    \"levels\": {
+      \"0\": {
+        \"statsUserDownlink\": true,
+        \"statsUserUplink\": true
+      }
+    },
+    \"system\": {
+      \"statsInboundDownlink\": true,
+      \"statsInboundUplink\": true,
+      \"statsOutboundDownlink\": false,
+      \"statsOutboundUplink\": false
+    }
+  },
+  \"metrics\": {
+    \"listen\": \"127.0.0.1:11111\",
+    \"tag\": \"metrics_out\"
+  },
+  \"inbounds\": [
+    {
+      \"listen\": \"127.0.0.1\",
+      \"port\": 62789,
+      \"protocol\": \"tunnel\",
+      \"settings\": {
+        \"rewriteAddress\": \"127.0.0.1\"
+      },
+      \"tag\": \"api\"
+    }
+  ],
   \"log\": {\"loglevel\": \"warning\"},
   \"dns\": {
     \"servers\": [
@@ -2185,6 +2263,45 @@ elif [[ "$SERVER_ROLE" == "cascade" ]]; then
 else
     # Standalone Russia Node: Direct routing for RU and general traffic
     XRAY_TEMPLATE_CONFIG="{
+  \"api\": {
+    \"services\": [
+      \"HandlerService\",
+      \"LoggerService\",
+      \"StatsService\",
+      \"RoutingService\"
+    ],
+    \"tag\": \"api\"
+  },
+  \"stats\": {},
+  \"policy\": {
+    \"levels\": {
+      \"0\": {
+        \"statsUserDownlink\": true,
+        \"statsUserUplink\": true
+      }
+    },
+    \"system\": {
+      \"statsInboundDownlink\": true,
+      \"statsInboundUplink\": true,
+      \"statsOutboundDownlink\": false,
+      \"statsOutboundUplink\": false
+    }
+  },
+  \"metrics\": {
+    \"listen\": \"127.0.0.1:11111\",
+    \"tag\": \"metrics_out\"
+  },
+  \"inbounds\": [
+    {
+      \"listen\": \"127.0.0.1\",
+      \"port\": 62789,
+      \"protocol\": \"tunnel\",
+      \"settings\": {
+        \"rewriteAddress\": \"127.0.0.1\"
+      },
+      \"tag\": \"api\"
+    }
+  ],
   \"log\": {\"loglevel\": \"warning\"},
   \"dns\": {
     \"servers\": [
@@ -2715,9 +2832,6 @@ mkdir -p /etc/nginx/snippets
 
 # 1. Nginx Stream (Port 443 TCP multiplexer)
 cat > "/etc/nginx/stream-enabled/stream.conf" << EOF
-map_hash_bucket_size 128;
-map_hash_max_size 4096;
-
 map \$ssl_preread_server_name \$sni_name {
     hostnames;
     ${domain}      web_local;
@@ -2743,12 +2857,11 @@ server {
 }
 EOF
 
-# Ensure stream module and map hash size are included in nginx.conf
+# Ensure stream module is included in nginx.conf
 if ! grep -q "stream {" /etc/nginx/nginx.conf 2>/dev/null; then
-    echo "stream { map_hash_bucket_size 128; include /etc/nginx/stream-enabled/*.conf; }" >> /etc/nginx/nginx.conf
+    echo "stream { include /etc/nginx/stream-enabled/*.conf; }" >> /etc/nginx/nginx.conf
 fi
 grep -xqFR "load_module modules/ngx_stream_module.so;" /etc/nginx/* || sed -i '1s/^/load_module \/usr\/lib\/nginx\/modules\/ngx_stream_module.so; /' /etc/nginx/nginx.conf 2>/dev/null || true
-sed -i 's/# server_names_hash_bucket_size.*/server_names_hash_bucket_size 128;/' /etc/nginx/nginx.conf 2>/dev/null || true
 
 # 2. Main HTTPS Server (Port 7443)
 cat > "/etc/nginx/sites-available/${domain}" << EOF
@@ -3100,10 +3213,6 @@ fi
 msg_step "Starting Services..."
 systemctl daemon-reload
 systemctl enable nginx x-ui 2>/dev/null || true
-if ! nginx -t 2>/dev/null; then
-    msg_warn "Nginx config test returned warnings or errors:"
-    nginx -t || true
-fi
 systemctl restart nginx 2>/dev/null || true
 systemctl restart x-ui 2>/dev/null || true
 
