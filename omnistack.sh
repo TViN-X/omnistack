@@ -1191,6 +1191,8 @@ while [ "$#" -gt 0 ]; do
         -ONLY_CF_IP_ALLOW) CFALLOW="$2"; shift 2;;
         -tg_token)         TG_BOT_TOKEN="$2"; shift 2;;
         -tg_id)            TG_CHAT_ID="$2"; shift 2;;
+        -no_tg_backup|-no-tg-backup) ENABLE_TG_BACKUP="n"; shift 1;;
+        -enable_tg_backup) ENABLE_TG_BACKUP="$2"; shift 2;;
         -sub_title|-sub-title|--sub-title) SUB_TITLE="$2"; shift 2;;
         -check|--check)    CHECK_SERVICES="y"; shift 1;;
         -scan|--scan)      SCAN_REALITY_ONLY="y"; shift 1;;
@@ -1473,18 +1475,28 @@ if [[ "$SERVER_ROLE" == "cascade" || "$SERVER_ROLE" == "standalone" ]]; then
 fi
 
 # Настройка еженедельного Telegram-бэкапа и информирования
-echo ""
-echo -e "${BOLD}${CYAN}Автоматический еженедельный бэкап и статистика в Telegram (Вс 21:00):${NC}"
-read -rp "Включить автоматический бэкап базы и отправку статистики в Telegram? [Y/n]: " enable_tg_input
-if [[ "$enable_tg_input" =~ ^[Nn]$ ]]; then
-    ENABLE_TG_BACKUP="n"
+if [[ "$ENABLE_TG_BACKUP" == "n" ]]; then
     msg_inf "Telegram-бэкап отключен."
-else
+elif [[ -n "$TG_BOT_TOKEN" && -n "$TG_CHAT_ID" ]]; then
     ENABLE_TG_BACKUP="y"
-    read -rp "Введите токен вашего Telegram-бота (от @BotFather): " tg_token_input
-    TG_BOT_TOKEN="${tg_token_input:-$TG_BOT_TOKEN}"
-    read -rp "Введите ваш Telegram Chat ID: " user_chat_id
-    TG_CHAT_ID="${user_chat_id:-$TG_CHAT_ID}"
+    msg_ok "Telegram-бэкап настроен из аргументов."
+elif [[ -t 0 ]]; then
+    echo ""
+    echo -e "${BOLD}${CYAN}Автоматический еженедельный бэкап и статистика в Telegram (Вс 21:00):${NC}"
+    read -rp "Включить автоматический бэкап базы и отправку статистики в Telegram? [Y/n]: " enable_tg_input
+    if [[ "$enable_tg_input" =~ ^[Nn]$ ]]; then
+        ENABLE_TG_BACKUP="n"
+        msg_inf "Telegram-бэкап отключен."
+    else
+        ENABLE_TG_BACKUP="y"
+        read -rp "Введите токен вашего Telegram-бота (от @BotFather): " tg_token_input
+        TG_BOT_TOKEN="${tg_token_input:-$TG_BOT_TOKEN}"
+        read -rp "Введите ваш Telegram Chat ID: " user_chat_id
+        TG_CHAT_ID="${user_chat_id:-$TG_CHAT_ID}"
+    fi
+else
+    ENABLE_TG_BACKUP="n"
+    msg_inf "Неинтерактивный режим: Telegram-бэкап пропущен."
 fi
 
 # Domain input
