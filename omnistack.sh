@@ -1319,6 +1319,9 @@ CLEANUP_PREVIOUS_INSTALL() {
         fi
 
         # 3. Полная очистка старой базы данных и бинарников панели для чистой установки
+        if [[ -f /etc/x-ui/x-ui.db ]]; then
+            sqlite3 /etc/x-ui/x-ui.db "UPDATE settings SET value = '' WHERE key IN ('subCertFile', 'subKeyFile');" 2>/dev/null || true
+        fi
         rm -f /etc/x-ui/x-ui.db* /etc/x-ui/system_metrics.gob /etc/x-ui/update-status.json 2>/dev/null || true
         rm -rf /usr/local/x-ui
         rm -rf /etc/systemd/system/x-ui.service.d/
@@ -2342,9 +2345,11 @@ if [[ -f "$XUIDB" ]]; then
     
     sqlite3 "$XUIDB" <<EOF
 -- Clean duplicate keys from settings and insert fresh config
-DELETE FROM "settings" WHERE "key" IN ('xrayTemplateConfig','subPort','subPath','subURI','subJsonPath','subJsonURI','subEnable','subEncrypt','webCertFile','webKeyFile','timeLocation','subTitle','subAnnounce','subClashEnable','subClashPath','subClashURI','subClashAutoDetect','subClashEnableRouting','subClashRules','subEnableRouting','subRoutingRules','subHappAutoDetect','subHappAutoConnect','subHappAutoConnectType','subHappSubInfoText','subHappSubInfoColor','subHappColorProfile','subHappTunMode','subIncyAppAutoDetect','subIncyProfileDescription','subIncyBannerText','subIncyBannerBgColor','subIncyBannerButtonText','subIncyBannerButtonColor','subIncyEnableRouting','subIncyRoutingRules','subJsonEnable','subJsonAutoDetect','subJsonRoutingRules');
+DELETE FROM "settings" WHERE "key" IN ('xrayTemplateConfig','subPort','subPath','subURI','subJsonPath','subJsonURI','subEnable','subEncrypt','subCertFile','subKeyFile','webCertFile','webKeyFile','timeLocation','subTitle','subAnnounce','subClashEnable','subClashPath','subClashURI','subClashAutoDetect','subClashEnableRouting','subClashRules','subEnableRouting','subRoutingRules','subHappAutoDetect','subHappAutoConnect','subHappAutoConnectType','subHappSubInfoText','subHappSubInfoColor','subHappColorProfile','subHappTunMode','subIncyAppAutoDetect','subIncyProfileDescription','subIncyBannerText','subIncyBannerBgColor','subIncyBannerButtonText','subIncyBannerButtonColor','subIncyEnableRouting','subIncyRoutingRules','subJsonEnable','subJsonAutoDetect','subJsonRoutingRules');
 INSERT INTO "settings" ("key", "value") VALUES ('xrayTemplateConfig', '${XRAY_TEMPLATE_CONFIG}');
 INSERT INTO "settings" ("key", "value") VALUES ("subPort", '${sub_port}');
+INSERT INTO "settings" ("key", "value") VALUES ("subCertFile", '');
+INSERT INTO "settings" ("key", "value") VALUES ("subKeyFile", '');
 INSERT INTO "settings" ("key", "value") VALUES ("subPath", '/${sub_path}/');
 INSERT INTO "settings" ("key", "value") VALUES ("subURI", '${sub_uri}');
 INSERT INTO "settings" ("key", "value") VALUES ("subJsonPath", '${json_path}');
@@ -2829,6 +2834,7 @@ cat > "/etc/nginx/snippets/includes.conf" << EOF
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
         proxy_pass http://127.0.0.1:${sub_port};
     }
     location /${sub_path}/ {
@@ -2836,6 +2842,7 @@ cat > "/etc/nginx/snippets/includes.conf" << EOF
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
         proxy_pass http://127.0.0.1:${sub_port};
     }
 
@@ -2845,6 +2852,7 @@ cat > "/etc/nginx/snippets/includes.conf" << EOF
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
         proxy_pass http://127.0.0.1:${sub_port};
     }
     location /${json_path}/ {
@@ -2852,6 +2860,7 @@ cat > "/etc/nginx/snippets/includes.conf" << EOF
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
         proxy_pass http://127.0.0.1:${sub_port};
     }
 
@@ -2861,6 +2870,7 @@ cat > "/etc/nginx/snippets/includes.conf" << EOF
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
         proxy_pass http://127.0.0.1:${sub_port};
     }
     location /clash/ {
@@ -2868,6 +2878,7 @@ cat > "/etc/nginx/snippets/includes.conf" << EOF
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
         proxy_pass http://127.0.0.1:${sub_port};
     }
 
