@@ -1281,7 +1281,7 @@ UNINSTALL_XUI() {
     $Pak -y autoremove &>/dev/null || true
     
     # Clean cronjobs
-    crontab -l 2>/dev/null | grep -v "certbot\|x-ui\|sub2sing-box\|cloudflareips" | crontab - || true
+    crontab -l 2>/dev/null | grep -v -E "certbot|x-ui|sub2sing-box|cloudflareips|x-ui-backup|x-ui-geodata" | crontab - || true
     msg_ok "Completely uninstalled!"
     exit 0
 }
@@ -1289,6 +1289,62 @@ UNINSTALL_XUI() {
 if [[ ${UNINSTALL} == "y" || ${UNINSTALL} == "yes" ]]; then
     UNINSTALL_XUI
 fi
+
+################################## Cleanup Previous Install ###################
+CLEANUP_PREVIOUS_INSTALL() {
+    local detected="n"
+    if command -v x-ui &>/dev/null || [[ -d /usr/local/x-ui ]] || [[ -f /etc/systemd/system/x-ui.service ]] || [[ -f /usr/local/bin/x-ui-setup ]] || [[ -d /usr/local/x-ui-pro ]] || [[ -d /etc/x-ui ]] || [[ -f /etc/nginx/sites-available/panel.whiteturn.ru ]] || ls /etc/nginx/sites-available/sub.* 1>/dev/null 2>&1; then
+        detected="y"
+    fi
+
+    if [[ "$detected" == "y" ]]; then
+        msg_step "Обнаружена предыдущая установка (x-ui-pro / x-ui / старый стек)..."
+        msg_inf "Выполняем безопасную очистку старых компонентов перед установкой OmniStack..."
+        
+        # 1. Остановка старых служб
+        systemctl stop x-ui sub2sing-box nginx 2>/dev/null || true
+        systemctl disable sub2sing-box 2>/dev/null || true
+        killall -9 sub2sing-box 2>/dev/null || true
+        fuser -k 80/tcp 443/tcp 443/udp 7443/tcp 8443/tcp 8080/tcp 2>/dev/null || true
+
+        # 2. Резервная копия базы x-ui на случай необходимости отката
+        if [[ -f /etc/x-ui/x-ui.db ]]; then
+            local bkp_dir="/var/backups/x-ui-pre-omnistack"
+            mkdir -p "$bkp_dir"
+            local bkp_file="$bkp_dir/x-ui.db.$(date +%Y%m%d_%H%M%S)"
+            cp -f /etc/x-ui/x-ui.db "$bkp_file" 2>/dev/null || true
+            msg_ok "Резервная копия старой базы X-UI сохранена: $bkp_file"
+        fi
+
+        # 3. Полная очистка старой базы данных и бинарников панели для чистой установки
+        rm -f /etc/x-ui/x-ui.db* /etc/x-ui/system_metrics.gob /etc/x-ui/update-status.json 2>/dev/null || true
+        rm -rf /usr/local/x-ui
+        rm -rf /etc/systemd/system/x-ui.service.d/
+
+        # 4. Очистка старых виртуальных хостов и stream Nginx
+        rm -f /etc/nginx/sites-enabled/*
+        rm -f /etc/nginx/sites-available/sub.* /etc/nginx/sites-available/panel.* /etc/nginx/sites-available/80.conf
+        rm -rf /etc/nginx/stream-enabled/*
+        rm -f /etc/nginx/snippets/includes.conf /etc/nginx/cloudflareips.sh
+
+        # 5. Очистка старых страниц подписки
+        rm -rf /var/www/subpage/*
+
+        # 6. Очистка старых cron-задач (x-ui, sub2sing-box, cloudflareips)
+        # Сохраняются сторонние cron-задачи (бэкапы, боты, ipset и т.д.)
+        if crontab -l &>/dev/null; then
+            crontab -l 2>/dev/null | grep -v -E "x-ui|sub2sing-box|cloudflareips|x-ui-backup|x-ui-geodata" | crontab - || true
+        fi
+        rm -f /etc/cron.d/x-ui-backup /etc/cron.d/x-ui-geodata
+
+        # 7. Очистка старых алиасов x-ui-pro
+        rm -f /usr/local/bin/x-ui-setup /usr/bin/x-ui-setup
+        rm -f /usr/local/bin/x-ui-backup.sh /usr/local/bin/x-ui-geodata-update.sh
+        rm -rf /usr/local/x-ui-pro
+
+        msg_ok "Очистка предыдущей установки завершена успешно."
+    fi
+}
 
 ################################## Interactive Menu ###########################
 if [[ -z "$SERVER_ROLE" ]]; then
@@ -1522,6 +1578,9 @@ EOF
     fi
 }
 setup_bbr_and_sysctl
+
+# Clean up any previous x-ui-pro / x-ui / omnistack installations before starting
+CLEANUP_PREVIOUS_INSTALL
 
 # Package Installation
 msg_step "Installing required dependencies..."
@@ -2966,10 +3025,6 @@ sysctl --system >/dev/null 2>&1 || true
 ################################## Firewall (UFW) #############################
 msg_step "Configuring UFW Firewall..."
 if command -v ufw &>/dev/null; then
-    ufw --force reset >/dev/null 2>&1 || true
-    ufw default deny incoming >/dev/null 2>&1 || true
-    ufw default allow outgoing >/dev/null 2>&1 || true
-    
     # TCP Ports
     ufw allow 22/tcp comment 'SSH' >/dev/null 2>&1 || true
     ufw allow 80/tcp comment 'HTTP' >/dev/null 2>&1 || true
@@ -2981,7 +3036,13 @@ if command -v ufw &>/dev/null; then
     ufw allow ${AWG1_PORT}/udp comment 'AmneziaWG 1.0 High Port' >/dev/null 2>&1 || true
     ufw allow ${AWG3_PORT}/udp comment 'AmneziaWG 3.1 High Port' >/dev/null 2>&1 || true
     
-    ufw --force enable >/dev/null 2>&1 || true
+    # Safely enable or reload without breaking active Docker/custom rules
+    if ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw reload >/dev/null 2>&1 || true
+    else
+        ufw default allow outgoing >/dev/null 2>&1 || true
+        ufw --force enable >/dev/null 2>&1 || true
+    fi
     msg_ok "Firewall configured: TCP(22, 80, 443), UDP(443, ${WG_PORT}, ${AWG1_PORT}, ${AWG3_PORT})"
 fi
 
