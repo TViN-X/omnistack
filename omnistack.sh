@@ -55,10 +55,29 @@ FAKE_THEME_CHOICE="0"
 ENABLE_TG_BACKUP="y"
 TG_BOT_TOKEN=""
 TG_CHAT_ID=""
-DIRECT_SERVICES_CHOICE=""
-CASCADE_SERVICES_CHOICE=""
 SUB_TITLE=""
 DEFAULT_SUB_TITLE=""
+
+# Multi-Cascade (Multiple Exit Nodes) configuration
+CASCADE_COUNT=1
+CASCADE_URLS=()
+CASCADE_TAGS=()
+CASCADE_ALIASES=()
+DEFAULT_CASCADE_TAG="cascade-out-1"
+
+# Grouped service routing destinations
+declare -A GROUP_DEST_TAG
+declare -A GROUP_DEST_NAME
+
+GROUP_NAMES=(
+    [1]="YouTube (Googlevideo CDN, youtube.com)"
+    [2]="Telegram"
+    [3]="Discord"
+    [4]="Остальные мессенджеры (WhatsApp, Signal, Viber, Skype, Element)"
+    [5]="Социальные сети (X/Twitter, Instagram, Facebook, Meta, TikTok, LinkedIn)"
+    [6]="Глобальные CDN сети (Cloudflare, Fastly, Akamai, Amazon AWS, Google)"
+    [7]="Нейросети и AI (OpenAI, Grok, Claude, Gemini Google AI, Perplexity, DeepSeek)"
+)
 
 # Script arguments / defaults
 domain=""
@@ -67,6 +86,7 @@ INSTALL="y"
 UNINSTALL="n"
 CFALLOW="n"
 CASCADE_EU_URL=""
+CASCADE_URLS_ARG=""
 PANEL_VER="$DEFAULT_PANEL_VERSION"
 Pak=$(type apt &>/dev/null && echo "apt" || echo "yum")
 
@@ -118,6 +138,22 @@ gen_uuid() {
         uuidgen | tr '[:upper:]' '[:lower:]'
     else
         python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null || gen_random_string 32
+    fi
+}
+
+gen_wg_keypair() {
+    if command -v wg &>/dev/null; then
+        local priv=$(wg genkey)
+        local pub=$(echo "$priv" | wg pubkey)
+        echo "$priv $pub"
+    else
+        python3 -c '
+import base64
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+priv = X25519PrivateKey.generate()
+pub = priv.public_key()
+print(base64.b64encode(priv.private_bytes_raw()).decode(), base64.b64encode(pub.public_bytes_raw()).decode())
+' 2>/dev/null || echo "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
     fi
 }
 
@@ -371,6 +407,507 @@ EOF
     fi
 
     msg_ok "Telegram-бэкап настроен (расписание: каждое воскресенье в 21:00)"
+}
+
+# ==============================================================================
+# Telegram Bot Interactive Management Submenu
+# ==============================================================================
+interactive_telegram_bot_menu() {
+    while true; do
+        show_banner
+        echo -e "${BOLD}${CYAN}=== 🤖 Управление Telegram-ботом и оповещениями ===${NC}\n"
+        
+        local conf="/etc/x-ui/telegram_backup.conf"
+        local curr_token=""
+        local curr_chat=""
+        local curr_title=""
+        local cron_active="n"
+        
+        if [[ -f "$conf" ]]; then
+            curr_token=$(grep -m1 '^TG_BOT_TOKEN=' "$conf" 2>/dev/null | cut -d'"' -f2)
+            curr_chat=$(grep -m1 '^TG_CHAT_ID=' "$conf" 2>/dev/null | cut -d'"' -f2)
+            curr_title=$(grep -m1 '^SUB_TITLE=' "$conf" 2>/dev/null | cut -d'"' -f2)
+        fi
+        
+        if [[ -f /etc/cron.d/x-ui-backup ]] && ! grep -q "^#" /etc/cron.d/x-ui-backup 2>/dev/null; then
+            cron_active="y"
+        fi
+        
+        echo -e "${BOLD}Текущее состояние:${NC}"
+        if [[ -n "$curr_token" && -n "$curr_chat" ]]; then
+            local masked_token="${curr_token:0:8}...${curr_token: -6}"
+            echo -e "  • Статус бота:       ${GREEN}✔ Настроен${NC}"
+            echo -e "  • Токен бота:        ${CYAN}${masked_token}${NC}"
+            echo -e "  • Chat ID:           ${CYAN}${curr_chat}${NC}"
+        else
+            echo -e "  • Статус бота:       ${YELLOW}⚠ Не настроен${NC}"
+        fi
+        
+        if [[ "$cron_active" == "y" ]]; then
+            echo -e "  • Расписание (Cron): ${GREEN}✔ Активно (каждое воскресенье в 21:00)${NC}"
+        else
+            echo -e "  • Расписание (Cron): ${RED}✖ Отключено${NC}"
+        fi
+        
+        echo ""
+        echo -e "${BOLD}Действия:${NC}"
+        echo -e "  [1] ⚙️  Включить / настроить бота (ввод токена и Chat ID)"
+        echo -e "  [2] 📤 Отправить тестовый отчет и бэкап в Telegram прямо сейчас"
+        echo -e "  [3] ⏱️  Переключить автобэкап по расписанию (Вкл / Выкл)"
+        echo -e "  [4] 🛑 Полностью отключить и деактивировать Telegram-бота"
+        echo -e "  [0] 🚪 Назад в главное меню"
+        echo ""
+        read -rp "Ваш выбор [0-4]: " tg_choice
+        
+        case "$tg_choice" in
+            1)
+                echo ""
+                echo -e "${BOLD}${CYAN}Настройка Telegram-бота:${NC}"
+                echo -e "1. Создайте бота через @BotFather в Telegram и скопируйте HTTP API токен."
+                echo -e "2. Узнайте свой Chat ID через бота @userinfobot или @myidbot."
+                echo ""
+                read -rp "Введите токен Telegram-бота: " input_token
+                input_token=$(echo "$input_token" | tr -d '[:space:]')
+                read -rp "Введите ваш Telegram Chat ID: " input_chat
+                input_chat=$(echo "$input_chat" | tr -d '[:space:]')
+                
+                if [[ -z "$input_token" || -z "$input_chat" ]]; then
+                    msg_err "Токен и Chat ID не могут быть пустыми!"
+                    sleep 2
+                    continue
+                fi
+                
+                msg_step "Проверка токена через Telegram API..."
+                local me_res
+                me_res=$(curl -s -m 5 "https://api.telegram.org/bot${input_token}/getMe" 2>/dev/null || echo "")
+                if echo "$me_res" | grep -q '"ok":true'; then
+                    local bot_name
+                    bot_name=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('result', {}).get('username', 'Bot'))" "$me_res" 2>/dev/null || echo "Bot")
+                    msg_ok "Бот найден: @${bot_name}!"
+                    
+                    TG_BOT_TOKEN="$input_token"
+                    TG_CHAT_ID="$input_chat"
+                    setup_telegram_backup
+                    msg_ok "Telegram-бот успешно настроен и активирован!"
+                else
+                    msg_err "Ошибка валидации токена! Telegram API вернул ошибку."
+                    msg_warn "Ответ API: ${me_res:0:100}"
+                fi
+                echo ""
+                read -rp "Нажмите Enter для продолжения..." _
+                ;;
+            2)
+                echo ""
+                if [[ ! -x /usr/local/bin/x-ui-backup.sh ]]; then
+                    if [[ -n "$curr_token" ]]; then
+                        setup_telegram_backup
+                    else
+                        msg_err "Сначала настройте токен и Chat ID (пункт 1)."
+                        read -rp "Нажмите Enter для продолжения..." _
+                        continue
+                    fi
+                fi
+                msg_step "Отправка тестового отчета и резервной копии базы в Telegram..."
+                /usr/local/bin/x-ui-backup.sh
+                msg_ok "Готово! Проверьте входящие сообщения от бота в Telegram."
+                echo ""
+                read -rp "Нажмите Enter для продолжения..." _
+                ;;
+            3)
+                echo ""
+                if [[ "$cron_active" == "y" ]]; then
+                    rm -f /etc/cron.d/x-ui-backup
+                    msg_ok "Автоматический бэкап по расписанию отключен."
+                else
+                    if [[ -z "$curr_token" || -z "$curr_chat" ]]; then
+                        msg_err "Сначала настройте бота (пункт 1), чтобы включить расписание."
+                    else
+                        cat > "/etc/cron.d/x-ui-backup" << EOF
+0 21 * * 0 root /usr/local/bin/x-ui-backup.sh >/dev/null 2>&1
+EOF
+                        chmod 644 /etc/cron.d/x-ui-backup
+                        msg_ok "Автоматический еженедельный бэкап включен (каждое воскресенье в 21:00)."
+                    fi
+                fi
+                echo ""
+                read -rp "Нажмите Enter для продолжения..." _
+                ;;
+            4)
+                echo ""
+                read -rp "Вы действительно хотите полностью отключить Telegram-бота? [y/N]: " confirm_del
+                if [[ "$confirm_del" =~ ^[Yy]$ ]]; then
+                    rm -f /etc/cron.d/x-ui-backup
+                    rm -f /etc/x-ui/telegram_backup.conf
+                    msg_ok "Telegram-бот полностью отключен и деактивирован."
+                fi
+                echo ""
+                read -rp "Нажмите Enter для продолжения..." _
+                ;;
+            0|q|exit)
+                break
+                ;;
+            *)
+                msg_warn "Неверный выбор."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# ==============================================================================
+# WireGuard & MikroTik Client Management Submenu
+# ==============================================================================
+interactive_wireguard_menu() {
+    if [[ ! -f "$XUIDB" ]]; then
+        msg_err "База данных X-UI ($XUIDB) не найдена! Убедитесь, что OmniStack установлен."
+        read -rp "Нажмите Enter для возврата..." _
+        return
+    fi
+
+    while true; do
+        show_banner
+        echo -e "${BOLD}${CYAN}=== 🛡️  Управление WireGuard и экспорт клиентских конфигов ===${NC}\n"
+
+        # Query WireGuard inbound and clients from SQLite via Python
+        local wg_raw_data
+        wg_raw_data=$(python3 - "$XUIDB" 2>/dev/null << 'PYEOF'
+import sys, sqlite3, json, subprocess
+
+db_path = sys.argv[1]
+conn = sqlite3.connect(db_path)
+c = conn.cursor()
+c.execute("SELECT id, port, settings FROM inbounds WHERE protocol='wireguard' LIMIT 1;")
+ib_row = c.fetchone()
+if not ib_row:
+    sys.exit(1)
+
+ib_id, port, settings_str = ib_row
+try:
+    settings = json.loads(settings_str)
+except Exception:
+    settings = {}
+priv_b64 = settings.get('secretKey', '')
+pub_b64 = ''
+if priv_b64:
+    try:
+        res = subprocess.run(['wg', 'pubkey'], input=priv_b64.encode(), stdout=subprocess.PIPE, check=True)
+        pub_b64 = res.stdout.decode().strip()
+    except Exception:
+        try:
+            import base64
+            from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+            from cryptography.hazmat.primitives import serialization
+            priv = X25519PrivateKey.from_private_bytes(base64.b64decode(priv_b64))
+            pub_b64 = base64.b64encode(priv.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode()
+        except Exception:
+            pub_b64 = ''
+
+print(f"INBOUND|{ib_id}|{port}|{pub_b64}")
+
+c.execute("SELECT id, email, coalesce(wg_private_key,''), coalesce(wg_public_key,''), coalesce(wg_allowed_ips,'') FROM clients;")
+for cid, email, cpriv, cpub, cips in c.fetchall():
+    c.execute("SELECT count(*) FROM client_inbounds WHERE client_id=? AND inbound_id=?", (cid, ib_id))
+    is_linked = 1 if (c.fetchone()[0] > 0 and cpub) else 0
+    print(f"CLIENT|{cid}|{email}|{cpriv}|{cpub}|{cips}|{is_linked}")
+conn.close()
+PYEOF
+)
+
+        if [[ -z "$wg_raw_data" ]] || ! echo "$wg_raw_data" | grep -q "^INBOUND|"; then
+            msg_warn "Инбаунд WireGuard не найден в базе данных 3X-UI!"
+            read -rp "Нажмите Enter для возврата..." _
+            return
+        fi
+
+        local wg_inbound_id="" wg_port="" wg_server_pub=""
+        local -a client_ids client_emails client_privs client_pubs client_ips client_linked
+        local idx=0
+
+        while IFS='|' read -r r_type c1 c2 c3 c4 c5 c6; do
+            if [[ "$r_type" == "INBOUND" ]]; then
+                wg_inbound_id="$c1"
+                wg_port="$c2"
+                wg_server_pub="$c3"
+            elif [[ "$r_type" == "CLIENT" ]]; then
+                idx=$((idx + 1))
+                client_ids[$idx]="$c1"
+                client_emails[$idx]="$c2"
+                client_privs[$idx]="$c3"
+                client_pubs[$idx]="$c4"
+                client_ips[$idx]="$c5"
+                client_linked[$idx]="$c6"
+            fi
+        done <<< "$wg_raw_data"
+
+        # Get server public host / domain
+        local srv_host=""
+        srv_host=$(sqlite3 "$XUIDB" "SELECT value FROM settings WHERE key='subURI' LIMIT 1;" 2>/dev/null | sed -E 's|https?://([^/:]+).*|\1|' | tr -d '[:space:]')
+        if [[ -z "$srv_host" || ! "$srv_host" =~ \. ]]; then
+            srv_host=$(ls -1 /etc/nginx/sites-available/ 2>/dev/null | grep -v '80.conf' | head -n1 | tr -d '[:space:]')
+        fi
+        if [[ -z "$srv_host" || ! "$srv_host" =~ \. ]]; then
+            srv_host=$(curl -s4 -m 3 ipv4.icanhazip.com 2>/dev/null | tr -d '[:space:]')
+        fi
+        srv_host="${srv_host:-SERVER_IP}"
+
+        echo -e "${BOLD}Параметры сервера WireGuard:${NC}"
+        echo -e "  • Inbound ID:        ${CYAN}${wg_inbound_id}${NC}"
+        echo -e "  • Порт (UDP):        ${CYAN}${wg_port}${NC}"
+        echo -e "  • Публичный ключ:    ${CYAN}${wg_server_pub}${NC}"
+        echo -e "  • Хост / Домен:      ${CYAN}${srv_host}${NC}"
+        echo ""
+
+        if [[ "$idx" -eq 0 ]]; then
+            msg_warn "В панели 3X-UI нет зарегистрированных клиентов!"
+            read -rp "Нажмите Enter для возврата..." _
+            return
+        fi
+
+        echo -e "${BOLD}Список клиентов в базе данных:${NC}"
+        for ((i=1; i<=idx; i++)); do
+            local c_mail="${client_emails[$i]}"
+            local c_ip="${client_ips[$i]}"
+            local c_st="${client_linked[$i]}"
+            if [[ "$c_st" == "1" ]]; then
+                echo -e "  ${CYAN}[$i]${NC} ${BOLD}${c_mail}${NC} (IP: ${c_ip:-10.0.0.X}) -> ${GREEN}✔ Привязан к WireGuard${NC}"
+            else
+                echo -e "  ${CYAN}[$i]${NC} ${BOLD}${c_mail}${NC} -> ${YELLOW}⚠ Не привязан к WireGuard${NC}"
+            fi
+        done
+
+
+        echo ""
+        echo -e "  ${NC}[0] 🚪 Назад в главное меню${NC}"
+        echo ""
+        read -rp "Выберите номер клиента для экспорта/привязки [1-$idx, 0=выход]: " c_choice
+        if [[ "$c_choice" == "0" || -z "$c_choice" ]]; then
+            break
+        fi
+
+        if [[ ! "$c_choice" =~ ^[0-9]+$ ]] || [[ "$c_choice" -lt 1 || "$c_choice" -gt "$idx" ]]; then
+            msg_warn "Неверный выбор."
+            sleep 1
+            continue
+        fi
+
+        local sel_id="${client_ids[$c_choice]}"
+        local sel_email="${client_emails[$c_choice]}"
+        local sel_priv="${client_privs[$c_choice]}"
+        local sel_pub="${client_pubs[$c_choice]}"
+        local sel_ip="${client_ips[$c_choice]}"
+        local sel_status="${client_linked[$c_choice]}"
+
+        # Auto-link client if not linked
+        if [[ "$sel_status" != "1" || -z "$sel_pub" || -z "$sel_priv" || -z "$sel_ip" ]]; then
+            echo ""
+            msg_step "Клиент '${sel_email}' не привязан к WireGuard или не имеет ключей. Привязываем..."
+            
+            # Generate keypair if missing
+            if [[ -z "$sel_priv" || -z "$sel_pub" ]]; then
+                read -r sel_priv sel_pub < <(gen_wg_keypair)
+            fi
+            
+            # Allocate next free IP in 10.0.0.0/24
+            if [[ -z "$sel_ip" || ! "$sel_ip" =~ ^10\.0\.0\. ]]; then
+                local next_ip
+                next_ip=$(python3 - "$XUIDB" 2>/dev/null << 'PYEOF'
+import sys, sqlite3
+db_path = sys.argv[1]
+conn = sqlite3.connect(db_path)
+c = conn.cursor()
+c.execute("SELECT wg_allowed_ips FROM clients WHERE wg_allowed_ips LIKE '10.0.0.%';")
+used = set()
+for r in c.fetchall():
+    try:
+        used.add(int(r[0].split('/')[0].split('.')[-1]))
+    except Exception:
+        pass
+for i in range(2, 255):
+    if i not in used:
+        print(f"10.0.0.{i}/32")
+        break
+conn.close()
+PYEOF
+)
+                sel_ip="${next_ip:-10.0.0.2/32}"
+            fi
+
+            # Update clients table
+            sqlite3 "$XUIDB" "UPDATE clients SET wg_private_key='${sel_priv}', wg_public_key='${sel_pub}', wg_allowed_ips='${sel_ip}', updated_at=strftime('%s','now')*1000 WHERE id='${sel_id}';"
+
+            # Insert into client_inbounds
+            sqlite3 "$XUIDB" "INSERT OR IGNORE INTO client_inbounds (client_id, inbound_id, flow_override, created_at) VALUES ('${sel_id}', '${wg_inbound_id}', '', strftime('%s','now')*1000);"
+
+            # Update settings JSON in inbounds table to sync peers
+            python3 -c "
+import sqlite3, json, sys
+
+db_path, inbound_id, email, pub_key, ip = sys.argv[1:6]
+conn = sqlite3.connect(db_path)
+c = conn.cursor()
+c.execute('SELECT settings FROM inbounds WHERE id=?', (inbound_id,))
+row = c.fetchone()
+if row:
+    settings = json.loads(row[0])
+    peers = settings.get('peers', [])
+    peers = [p for p in peers if p.get('email') != email and p.get('publicKey') != pub_key]
+    peers.append({'publicKey': pub_key, 'allowedIPs': [ip], 'email': email, 'keepAlive': 0})
+    settings['peers'] = peers
+    c.execute('UPDATE inbounds SET settings=? WHERE id=?', (json.dumps(settings), inbound_id))
+    conn.commit()
+conn.close()
+" "$XUIDB" "$wg_inbound_id" "$sel_email" "$sel_pub" "$sel_ip"
+
+            # Restart X-UI to reload config.json
+            systemctl restart x-ui 2>/dev/null || true
+            msg_ok "Клиент '${sel_email}' успешно привязан к WireGuard с IP ${sel_ip}!"
+        fi
+
+        # Client details menu
+        while true; do
+            echo ""
+            echo -e "${BOLD}${PURPLE}=== Конфигурация WireGuard для: ${sel_email} ===${NC}"
+            echo -e "  • Client IP:         ${CYAN}${sel_ip}${NC}"
+            echo -e "  • Client Public Key: ${CYAN}${sel_pub}${NC}"
+            echo -e "  • Server Endpoint:   ${CYAN}${srv_host}:${wg_port}${NC}"
+            echo ""
+            echo -e "  [1] 📄 Показать стандартный конфиг wireguard.conf и сохранить в файл"
+            echo -e "  [2] 📱 Показать QR-код в терминале (для мобильного WireGuard)"
+            echo -e "  [3] 📟 Сгенерировать готовые команды для MikroTik RouterOS"
+            echo -e "  [4] 🔑 Привязать внешний публичный ключ (сгенерированный на роутере)"
+            echo -e "  [0] 🚪 Назад к списку клиентов"
+            echo ""
+            read -rp "Выберите действие [0-4]: " act_choice
+
+            case "$act_choice" in
+                1)
+                    local conf_path="/root/client_configs/wireguard_${sel_email}.conf"
+                    mkdir -p /root/client_configs
+                    cat > "$conf_path" << CONF_EOF
+[Interface]
+PrivateKey = ${sel_priv}
+Address = ${sel_ip}
+DNS = 1.1.1.1, 8.8.8.8
+
+[Peer]
+PublicKey = ${wg_server_pub}
+Endpoint = ${srv_host}:${wg_port}
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25
+CONF_EOF
+                    chmod 600 "$conf_path"
+                    echo ""
+                    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                    cat "$conf_path"
+                    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                    msg_ok "Конфиг сохранен в: ${conf_path}"
+                    echo ""
+                    read -rp "Нажмите Enter для продолжения..." _
+                    ;;
+                2)
+                    echo ""
+                    msg_step "Генерация QR-кода..."
+                    local temp_conf
+                    temp_conf=$(mktemp)
+                    cat > "$temp_conf" << QR_EOF
+[Interface]
+PrivateKey = ${sel_priv}
+Address = ${sel_ip}
+DNS = 1.1.1.1, 8.8.8.8
+
+[Peer]
+PublicKey = ${wg_server_pub}
+Endpoint = ${srv_host}:${wg_port}
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25
+QR_EOF
+                    if ! command -v qrencode &>/dev/null; then
+                        $Pak -y install qrencode &>/dev/null || true
+                    fi
+
+                    if command -v qrencode &>/dev/null; then
+                        qrencode -t ansiutf8 < "$temp_conf"
+                    else
+                        msg_warn "Утилита qrencode не найдена. Установите: apt install -y qrencode"
+                    fi
+                    rm -f "$temp_conf"
+                    echo ""
+                    msg_inf "Отсканируйте этот QR-код через официальное приложение WireGuard на смартфоне."
+                    echo ""
+                    read -rp "Нажмите Enter для продолжения..." _
+                    ;;
+                3)
+                    local net_ip="${sel_ip%/*}"
+                    local net_base="${net_ip%.*}.0"
+                    echo ""
+                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                    echo -e "${BOLD}Готовые команды для терминала MikroTik RouterOS (v7+):${NC}"
+                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                    cat << MIKROTIK_EOF
+
+# 1. Создание интерфейса WireGuard
+/interface wireguard add name="wg-omnistack" listen-port=13231 private-key="${sel_priv}" comment="OmniStack WireGuard"
+
+# 2. Назначение IP-адреса на интерфейс
+/ip address add address=${sel_ip} network=${net_base} interface="wg-omnistack" comment="OmniStack WG IP"
+
+# 3. Добавление серверного Peer
+/interface wireguard peers add interface="wg-omnistack" public-key="${wg_server_pub}" endpoint-address="${srv_host}" endpoint-port=${wg_port} allowed-address=0.0.0.0/0 persistent-keepalive=25 comment="OmniStack Server"
+
+# 4. Настройка NAT Masquerade (для устройств в локальной сети за MikroTik)
+/ip firewall nat add chain=srcnat out-interface="wg-omnistack" action=masquerade comment="OmniStack WG Masquerade"
+
+MIKROTIK_EOF
+                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                    msg_inf "Скопируйте и вставьте эти команды в терминал WinBox / SSH MikroTik."
+                    echo ""
+                    read -rp "Нажмите Enter для продолжения..." _
+                    ;;
+                4)
+                    echo ""
+                    echo -e "${BOLD}${CYAN}Привязка внешнего публичного ключа:${NC}"
+                    echo -e "Если вы сгенерировали пару ключей непосредственно на MikroTik или другом клиенте,"
+                    echo -e "вставьте сгенерированный там Public Key ниже:"
+                    read -rp "Введите Public Key клиента: " user_wg_pub
+                    user_wg_pub=$(echo "$user_wg_pub" | tr -d '[:space:]')
+                    if [[ ${#user_wg_pub} -ge 40 ]]; then
+                        sqlite3 "$XUIDB" "UPDATE clients SET wg_public_key='${user_wg_pub}', updated_at=strftime('%s','now')*1000 WHERE id='${sel_id}';"
+                        python3 -c "
+import sqlite3, json, sys
+db_path, inbound_id, email, pub_key, ip = sys.argv[1:6]
+conn = sqlite3.connect(db_path)
+c = conn.cursor()
+c.execute('SELECT settings FROM inbounds WHERE id=?', (inbound_id,))
+row = c.fetchone()
+if row:
+    settings = json.loads(row[0])
+    peers = settings.get('peers', [])
+    peers = [p for p in peers if p.get('email') != email]
+    peers.append({'publicKey': pub_key, 'allowedIPs': [ip], 'email': email, 'keepAlive': 0})
+    settings['peers'] = peers
+    c.execute('UPDATE inbounds SET settings=? WHERE id=?', (json.dumps(settings), inbound_id))
+    conn.commit()
+conn.close()
+" "$XUIDB" "$wg_inbound_id" "$sel_email" "$user_wg_pub" "$sel_ip"
+                        systemctl restart x-ui 2>/dev/null || true
+                        sel_pub="$user_wg_pub"
+                        msg_ok "Публичный ключ успешно обновлен!"
+                    else
+                        msg_err "Некорректный формат публичного ключа!"
+                    fi
+                    echo ""
+                    read -rp "Нажмите Enter для продолжения..." _
+                    ;;
+                0|q|exit)
+                    break
+                    ;;
+                *)
+                    msg_warn "Неверный выбор."
+                    sleep 1
+                    ;;
+            esac
+        done
+    done
 }
 
 # ==============================================================================
@@ -1184,7 +1721,20 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         -role)             SERVER_ROLE="$2"; shift 2;;
         -domain)           domain="$2"; shift 2;;
-        -cascade_url)      CASCADE_EU_URL="$2"; shift 2;;
+        -cascade_url)
+            CASCADE_EU_URL="$2"
+            CASCADE_COUNT=1
+            CASCADE_URLS[1]="$2"
+            CASCADE_TAGS[1]="cascade-out-1"
+            CASCADE_ALIASES[1]="Exit-1"
+            shift 2;;
+        -cascade_urls)     CASCADE_URLS_ARG="$2"; shift 2;;
+        -tg-menu|--tg-menu|-tg)
+            interactive_telegram_bot_menu
+            exit 0;;
+        -wg-menu|--wg-menu|-wg)
+            interactive_wireguard_menu
+            exit 0;;
         -reality_target)   REALITY_DEFAULT_TARGET="$2"; shift 2;;
         -reality_sni)      REALITY_DEFAULT_SNI="$2"; shift 2;;
         -version)          PANEL_VER="$2"; shift 2;;
@@ -1218,6 +1768,24 @@ while [ "$#" -gt 0 ]; do
         *) shift 1;;
     esac
 done
+
+if [[ -n "$CASCADE_URLS_ARG" ]]; then
+    CASCADE_URLS=()
+    CASCADE_TAGS=()
+    CASCADE_ALIASES=()
+    CASCADE_COUNT=0
+    IFS=',' read -ra CU_ARR <<< "$CASCADE_URLS_ARG"
+    for cu in "${CU_ARR[@]}"; do
+        cu=$(echo "$cu" | tr -d '[:space:]')
+        if [[ -n "$cu" ]]; then
+            CASCADE_COUNT=$((CASCADE_COUNT + 1))
+            CASCADE_URLS[$CASCADE_COUNT]="$cu"
+            CASCADE_TAGS[$CASCADE_COUNT]="cascade-out-$CASCADE_COUNT"
+            CASCADE_ALIASES[$CASCADE_COUNT]="Exit-$CASCADE_COUNT"
+        fi
+    done
+    [[ "$CASCADE_COUNT" -gt 0 ]] && CASCADE_EU_URL="${CASCADE_URLS[1]}"
+fi
 
 if [[ "$CHECK_SERVICES" == "y" ]]; then
     check_services_accessibility
@@ -1359,8 +1927,8 @@ if [[ -z "$SERVER_ROLE" ]]; then
         echo -e "  ${GREEN}[1] Внешний / Зарубежный сервер (Exit Node)${NC}"
         echo -e "      ↳ Прямой выход в интернет. Изоляция .RU-зоны в Blackhole (защита локального сетевого адреса)."
         echo ""
-        echo -e "  ${CYAN}[2] Сервер в РФ с каскадом на внешний сервер (Cascade Ingress)${NC}"
-        echo -e "      ↳ Сплит-маршрутизация: ресурсы РФ напрямую, остальной трафик -> в туннель на Exit-ноду."
+        echo -e "  ${CYAN}[2] Сервер в РФ с каскадом на внешние серверы (Cascade Ingress)${NC}"
+        echo -e "      ↳ Сплит-маршрутизация: ресурсы РФ напрямую, остальной трафик -> в каскад на Exit-ноды (поддержка нескольких серверов)."
         echo ""
         echo -e "  ${YELLOW}[3] Сервер в РФ автономный (Standalone)${NC}"
         echo -e "      ↳ Полный сервер внутри РФ без исходящего каскадного туннеля."
@@ -1371,21 +1939,24 @@ if [[ -z "$SERVER_ROLE" ]]; then
         echo -e "  ${BLUE}[5] 🎨 Сменить тему сайта-заглушки (выбор из 15 русскоязычных тем)${NC}"
         echo -e "      ↳ Установить тему сайта-маскировки (в разработке / скорое открытие) и обновить Nginx."
         echo ""
-        echo -e "  ${YELLOW}[6] 💾 Создать бэкап и отправить в Telegram${NC}"
-        echo -e "      ↳ Экстренная выгрузка базы, конфигураций и отправка статистики в Telegram-бот."
+        echo -e "  ${CYAN}[6] 🤖 Управление Telegram-ботом и оповещениями (Вкл / Выкл / Токен)${NC}"
+        echo -e "      ↳ Активация, настройка токена, тест отправки, еженедельные бэкапы и отключение бота."
         echo ""
-        echo -e "  ${CYAN}[7] 🔄 Обновить базы GeoIP и Geosite${NC}"
+        echo -e "  ${GREEN}[7] 🛡️  Клиентские конфиги WireGuard & MikroTik (.conf / QR / RouterOS)${NC}"
+        echo -e "      ↳ Экспорт валидных WireGuard .conf файлов, QR-кодов и готовых команд для роутеров MikroTik."
+        echo ""
+        echo -e "  ${YELLOW}[8] 🔄 Обновить базы GeoIP и Geosite${NC}"
         echo -e "      ↳ Скачать свежие базы правил маршрутизации (Loyalsoldier / v2fly) для Xray."
         echo ""
-        echo -e "  ${BLUE}[8] 🛠️  Установка базового ПО сервера (base-vps-soft-install)${NC}"
+        echo -e "  ${BLUE}[9] 🛠️  Установка базового ПО сервера (base-vps-soft-install)${NC}"
         echo -e "      ↳ Системные утилиты, безопасность и базовый софт с github.com/TViN-X/base-vps-soft-install."
         echo ""
-        echo -e "  ${RED}[9] ❌ Удалить OmniStack полностью${NC}"
+        echo -e "  ${RED}[10] ❌ Удалить OmniStack полностью${NC}"
         echo -e "      ↳ Полная очистка: Nginx, 3X-UI, бэкапы, сертификаты и конфигурации."
         echo ""
         echo -e "  ${NC}[0] 🚪 Выход${NC}"
         echo ""
-        read -rp "Ваш выбор [0-9]: " menu_choice
+        read -rp "Ваш выбор [0-10]: " menu_choice
 
         case "$menu_choice" in
             1) SERVER_ROLE="exit"; break ;;
@@ -1402,15 +1973,12 @@ if [[ -z "$SERVER_ROLE" ]]; then
                 read -rp "Нажмите Enter для возврата в главное меню..." _
                 ;;
             6)
-                if [[ -x /usr/local/bin/x-ui-backup.sh ]]; then
-                    /usr/local/bin/x-ui-backup.sh
-                else
-                    msg_err "Скрипт бэкапа /usr/local/bin/x-ui-backup.sh не найден! Возможно сервер еще не установлен."
-                fi
-                echo ""
-                read -rp "Нажмите Enter для возврата в главное меню..." _
+                interactive_telegram_bot_menu
                 ;;
             7)
+                interactive_wireguard_menu
+                ;;
+            8)
                 if [[ -x /usr/local/bin/x-ui-geodata-update.sh ]]; then
                     /usr/local/bin/x-ui-geodata-update.sh
                 else
@@ -1419,13 +1987,13 @@ if [[ -z "$SERVER_ROLE" ]]; then
                 echo ""
                 read -rp "Нажмите Enter для возврата в главное меню..." _
                 ;;
-            8)
+            9)
                 msg_step "Запуск установки базового ПО с github.com/TViN-X/base-vps-soft-install..."
                 bash <(curl -fsSL https://raw.githubusercontent.com/TViN-X/base-vps-soft-install/master/install.sh)
                 echo ""
                 read -rp "Нажмите Enter для возврата в главное меню..." _
                 ;;
-            9)
+            10)
                 echo ""
                 read -rp "Вы действительно хотите полностью удалить OmniStack? [y/N]: " confirm_un
                 if [[ "$confirm_un" =~ ^[Yy]$ ]]; then
@@ -1444,36 +2012,130 @@ if [[ -z "$SERVER_ROLE" ]]; then
     done
 fi
 
-if [[ "$SERVER_ROLE" == "cascade" && -z "$CASCADE_EU_URL" ]]; then
-    echo ""
-    echo -e "${BOLD}${CYAN}Настройка каскада (Ingress РФ ➔ Внешняя Exit-нода):${NC}"
-    echo -e "Введите ссылку подключения к вашему внешнему серверу"
-    echo -e "(поддерживаются: vless://..., shadowsocks://..., socks5://..., trojan://...):"
-    read -rp "Ссылка на внешнюю Exit-ноду: " CASCADE_EU_URL
-    if [[ -z "$CASCADE_EU_URL" ]]; then
+if [[ "$SERVER_ROLE" == "cascade" ]]; then
+    if [[ -n "$CASCADE_EU_URL" && "$CASCADE_COUNT" -gt 0 ]]; then
+        : # Already populated from argument
+    elif [[ -t 0 ]]; then
+        echo ""
+        echo -e "${BOLD}${CYAN}Настройка каскада (Ingress РФ ➔ Зарубежные Exit-ноды):${NC}"
+        echo -e "Вы можете подключить один или несколько зарубежных серверов (Exit Nodes)."
+        echo -e "Если серверов несколько, трафик разных сервисов (YouTube, AI, CDN...) можно распределить между ними."
+        read -rp "Сколько зарубежных серверов планируется использовать? [1-9, Enter = 1]: " cascade_count_in
+        CASCADE_COUNT="${cascade_count_in:-1}"
+        if ! [[ "$CASCADE_COUNT" =~ ^[1-9]$ ]]; then
+            CASCADE_COUNT=1
+        fi
+
+        for ((i=1; i<=CASCADE_COUNT; i++)); do
+            echo ""
+            default_alias="Exit-$i"
+            if [[ "$CASCADE_COUNT" -gt 1 ]]; then
+                read -rp "Имя/локация сервера #$i (например: Финляндия, Германия) [Exit-$i]: " alias_in
+                CASCADE_ALIASES[$i]="${alias_in:-$default_alias}"
+                echo -e "Введите ссылку подключения к серверу #$i (${CASCADE_ALIASES[$i]}):"
+            else
+                CASCADE_ALIASES[$i]="Exit-1"
+                echo -e "Введите ссылку подключения к внешнему серверу (vless://..., trojan://..., ss://..., socks5://...):"
+            fi
+            read -rp "Ссылка подключения: " link_in
+            while [[ -z "$link_in" ]]; do
+                msg_warn "Ссылка подключения не может быть пустой!"
+                read -rp "Повторите ввод ссылки подключения: " link_in
+            done
+            CASCADE_URLS[$i]="$link_in"
+            CASCADE_TAGS[$i]="cascade-out-$i"
+        done
+
+        if [[ "$CASCADE_COUNT" -gt 1 ]]; then
+            echo ""
+            echo -e "Какой сервер использовать по умолчанию для остального интернет-трафика?"
+            for ((i=1; i<=CASCADE_COUNT; i++)); do
+                echo -e "  [$i] ${CASCADE_ALIASES[$i]} (${CASCADE_TAGS[$i]})"
+            done
+            read -rp "Выбор сервера по умолчанию [1-$CASCADE_COUNT, Enter = 1]: " def_choice
+            def_choice="${def_choice:-1}"
+            if [[ "$def_choice" =~ ^[1-9]$ ]] && [[ "$def_choice" -le "$CASCADE_COUNT" ]]; then
+                DEFAULT_CASCADE_TAG="cascade-out-$def_choice"
+            else
+                DEFAULT_CASCADE_TAG="cascade-out-1"
+            fi
+        else
+            DEFAULT_CASCADE_TAG="cascade-out-1"
+        fi
+        CASCADE_EU_URL="${CASCADE_URLS[1]}"
+    else
         msg_warn "Ссылка не указана! Сервер будет настроен как обычный автономный в РФ."
         SERVER_ROLE="standalone"
     fi
 fi
 
-# Выборочная дополнительная маршрутизация сервисов
+# Выборочная групповая маршрутизация сервисов
 if [[ "$SERVER_ROLE" == "cascade" || "$SERVER_ROLE" == "standalone" ]]; then
     echo ""
-    echo -e "${BOLD}${CYAN}Выборочная маршрутизация сервисов (Direct vs Каскад):${NC}"
-    echo -e "Вы можете распределить конкретные популярные сервисы:"
-    echo -e "  [1] Telegram                     [7] OpenAI (ChatGPT)"
-    echo -e "  [2] Discord                      [8] Claude AI (Anthropic)"
-    echo -e "  [3] YouTube / Googlevideo CDN    [9] Cloudflare CDN"
-    echo -e "  [4] WhatsApp                     [10] Amazon AWS / CloudFront"
-    echo -e "  [5] Instagram & Facebook (Meta)  [11] Google Services & Play Store"
-    echo -e "  [6] Twitter / X                  [12] Spotify"
+    echo -e "${BOLD}${CYAN}Групповая маршрутизация сервисов:${NC}"
+    echo -e "Каждая категория сервисов будет оформлена отдельным изолированным правилом маршрутизации:"
+    echo -e "  [1] YouTube (Googlevideo CDN, youtube.com)"
+    echo -e "  [2] Telegram"
+    echo -e "  [3] Discord"
+    echo -e "  [4] Остальные мессенджеры (WhatsApp, Signal, Viber, Skype, Element)"
+    echo -e "  [5] Социальные сети (X/Twitter, Instagram, Facebook, Meta, TikTok, LinkedIn)"
+    echo -e "  [6] Глобальные CDN сети (Cloudflare, Fastly, Akamai, Amazon AWS, Google)"
+    echo -e "  [7] Нейросети и AI (OpenAI, Grok, Claude, Gemini Google AI, Perplexity, DeepSeek)"
     echo ""
-    echo -e "${YELLOW}Примечание:${NC} Стандартные правила (.RU -> DIRECT, реклама -> BLOCKED) действуют всегда."
-    echo -e "Если нажать Enter без ввода цифр, будут использованы стандартные правила."
+    echo -e "${YELLOW}Примечание:${NC} Ресурсы РФ (.RU, geoip:ru) ВСЕГДА идут напрямую (DIRECT), а реклама блокируется."
     echo ""
-    read -rp "Какие сервисы отправить напрямую через РФ (DIRECT)? [номера через запятую, e.g. 1,3,4]: " DIRECT_SERVICES_CHOICE
+
     if [[ "$SERVER_ROLE" == "cascade" ]]; then
-        read -rp "Какие сервисы отправить через каскад на внешний сервер (CASCADE)? [номера через запятую, e.g. 2,5,6,7]: " CASCADE_SERVICES_CHOICE
+        echo -e "Доступные направления:"
+        echo -e "  ${GREEN}[D]${NC} Напрямую через РФ (DIRECT)"
+        for ((i=1; i<=CASCADE_COUNT; i++)); do
+            echo -e "  ${CYAN}[$i]${NC} ${CASCADE_ALIASES[$i]} (${CASCADE_TAGS[$i]})"
+        done
+        echo ""
+        echo -e "Выберите профиль настройки:"
+        echo -e "  [1] Рекомендуемый профиль (Все группы 1-7 направляются на ${CASCADE_ALIASES[1]})"
+        echo -e "  [2] Индивидуальное распределение каждой группы"
+        read -rp "Ваш выбор [1/2, Enter = 1]: " grp_mode_in
+        grp_mode_in="${grp_mode_in:-1}"
+
+        if [[ "$grp_mode_in" == "2" ]]; then
+            for g in 1 2 3 4 5 6 7; do
+                gname="${GROUP_NAMES[$g]}"
+                read -rp "Направление для '${gname}' [D/1-${CASCADE_COUNT}, Enter = 1]: " g_dest
+                g_dest=$(echo "$g_dest" | tr -d '[:space:]')
+                if [[ "$g_dest" =~ ^[Dd0]$ ]]; then
+                    GROUP_DEST_TAG[$g]="direct"
+                elif [[ "$g_dest" =~ ^[1-9]$ ]] && [[ "$g_dest" -le "$CASCADE_COUNT" ]]; then
+                    GROUP_DEST_TAG[$g]="cascade-out-$g_dest"
+                else
+                    GROUP_DEST_TAG[$g]="${DEFAULT_CASCADE_TAG}"
+                fi
+            done
+        else
+            for g in 1 2 3 4 5 6 7; do
+                GROUP_DEST_TAG[$g]="${DEFAULT_CASCADE_TAG}"
+            done
+        fi
+    else
+        # Standalone (RU)
+        echo -e "Направление для сервисов: по умолчанию все разрешены напрямую (DIRECT)."
+        echo -e "Хотите заблокировать конкретные сервисы? [y/N]: "
+        read -rp "Выбор [y/N, Enter = N]: " block_in
+        if [[ "$block_in" =~ ^[Yy]$ ]]; then
+            for g in 1 2 3 4 5 6 7; do
+                gname="${GROUP_NAMES[$g]}"
+                read -rp "Направление для '${gname}' [D=Direct / B=Block, Enter = D]: " g_dest
+                if [[ "$g_dest" =~ ^[Bb]$ ]]; then
+                    GROUP_DEST_TAG[$g]="blocked"
+                else
+                    GROUP_DEST_TAG[$g]="direct"
+                fi
+            done
+        else
+            for g in 1 2 3 4 5 6 7; do
+                GROUP_DEST_TAG[$g]="direct"
+            done
+        fi
     fi
 fi
 
@@ -1600,7 +2262,7 @@ CLEANUP_PREVIOUS_INSTALL
 # Package Installation
 msg_step "Installing required dependencies..."
 $Pak -y update
-$Pak -y install curl wget jq tar gzip certbot python3-certbot-nginx sqlite3 ufw openssl coreutils nginx-full wireguard-tools
+$Pak -y install curl wget jq tar gzip certbot python3-certbot-nginx sqlite3 ufw openssl coreutils nginx-full wireguard-tools qrencode
 
 # Stop existing web/proxy services to free ports
 systemctl stop nginx x-ui 2>/dev/null || true
@@ -1817,87 +2479,171 @@ msg_ok "Reality Private Key: ${REALITY_PRIV_KEY:0:10}... Public Key: ${REALITY_P
 ################################## Database & Inbounds Setup ##################
 msg_step "Configuring 3X-UI Database & Protocols..."
 
-# Helper to map chosen service numbers to geosite tags
-map_services_to_domains() {
-    local input="$1"
-    local domains=()
-    IFS=',' read -ra ADDR <<< "$input"
-    for item in "${ADDR[@]}"; do
-        item=$(echo "$item" | tr -d '[:space:]')
-        case "$item" in
-            1) domains+=('"geosite:telegram"') ;;
-            2) domains+=('"geosite:discord"') ;;
-            3) domains+=('"geosite:youtube"') ;;
-            4) domains+=('"geosite:whatsapp"') ;;
-            5) domains+=('"geosite:instagram"' '"geosite:facebook"') ;;
-            6) domains+=('"geosite:twitter"') ;;
-            7) domains+=('"geosite:openai"') ;;
-            8) domains+=('"geosite:anthropic"') ;;
-            9) domains+=('"geosite:cloudflare"') ;;
-            10) domains+=('"geosite:amazon"' '"geosite:aws"') ;;
-            11) domains+=('"geosite:google"') ;;
-            12) domains+=('"geosite:spotify"') ;;
-        esac
-    done
-    local result=""
-    if [[ ${#domains[@]} -gt 0 ]]; then
-        result=$(IFS=,; echo "${domains[*]}")
-    fi
-    echo "$result"
+# Generator for Grouped Routing Rules, Clash Rules, and Happ/Incy Subscription
+GROUP_MAP_STR=""
+for k in "${!GROUP_DEST_TAG[@]}"; do
+    GROUP_MAP_STR+="${k}=${GROUP_DEST_TAG[$k]} "
+done
+
+GENERATED_CONFIGS=$(python3 - "$GROUP_MAP_STR" "$SUB_TITLE" << 'PY_ROUTING_EOF'
+import sys, json, base64
+
+map_str = sys.argv[1] if len(sys.argv) > 1 else ""
+sub_title = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else "OmniStack"
+
+group_dest_map = {}
+for pair in map_str.split():
+    if "=" in pair:
+        k, v = pair.split("=", 1)
+        group_dest_map[k] = v
+
+GOOGLE_AI_DOMAINS = [
+    "deepmind.com", "deepmind.google", "geller-pa.googleapis.com",
+    "generativelanguage.googleapis.com", "proactivebackend-pa.googleapis.com",
+    "ai.google.dev", "generativeai.google", "makersuite.google.com",
+    "aistudio.google.com", "bard.google.com", "gemini.google",
+    "gemini.google.com", "notebooklm.google.com", "clients6.google.com",
+    "notebooklm.google", "jules.google", "jules.google.com", "labs.google",
+    "aisandbox-pa.googleapis.com", "stitch.withgoogle.com",
+    "robinfrontend-pa.googleapis.com", "aida.googleapis.com",
+    "antigravity-pa.googleapis.com", "antigravity.googleapis.com",
+    "antigravity.google", "antigravity-unleash.goog",
+    "firebaseinstallations.googleapis.com", "speechs3proto2-pa.googleapis.com"
+]
+
+GROUPS = {
+    "1": {
+        "name": "YouTube",
+        "geosites": ["geosite:youtube", "geosite:googlevideo"],
+        "domains": ["googlevideo.com", "youtube.com", "youtu.be", "ytimg.com"]
+    },
+    "2": {
+        "name": "Telegram",
+        "geosites": ["geosite:telegram"],
+        "domains": []
+    },
+    "3": {
+        "name": "Discord",
+        "geosites": ["geosite:discord"],
+        "domains": []
+    },
+    "4": {
+        "name": "Other Messengers (WhatsApp, Signal, Viber, Skype, Element)",
+        "geosites": ["geosite:whatsapp", "geosite:signal", "geosite:viber", "geosite:skype"],
+        "domains": ["matrix.org", "element.io"]
+    },
+    "5": {
+        "name": "Social Networks (X/Twitter, Instagram, Facebook, Meta, TikTok, LinkedIn)",
+        "geosites": ["geosite:twitter", "geosite:instagram", "geosite:facebook", "geosite:meta", "geosite:linkedin", "geosite:tiktok"],
+        "domains": ["x.com", "twitter.com", "t.co", "instagram.com", "cdninstagram.com", "facebook.com", "fbcdn.net", "threads.net"]
+    },
+    "6": {
+        "name": "CDN Networks (Cloudflare, Fastly, Akamai, AWS, Google)",
+        "geosites": ["geosite:cloudflare", "geosite:fastly", "geosite:akamai", "geosite:amazon", "geosite:aws", "geosite:google"],
+        "domains": []
+    },
+    "7": {
+        "name": "AI & LLMs (OpenAI, Grok, Claude, Gemini Google AI, Perplexity, DeepSeek)",
+        "geosites": ["geosite:openai", "geosite:anthropic"],
+        "domains": ["chatgpt.com", "oaistatic.com", "oaiusercontent.com", "claude.ai", "x.ai", "grok.com", "perplexity.ai", "deepseek.com"] + GOOGLE_AI_DOMAINS
+    }
 }
 
-CUSTOM_DIRECT_DOMAINS=$(map_services_to_domains "$DIRECT_SERVICES_CHOICE")
-CUSTOM_CASCADE_DOMAINS=$(map_services_to_domains "$CASCADE_SERVICES_CHOICE")
+xray_rules = []
+clash_rules = []
+direct_sites = [
+    "geosite:ru", "domain:ru", "domain:su", "domain:xn--p1ai",
+    "geosite:category-gov-ru", "domain:gosuslugi.ru", "domain:sberbank.ru",
+    "domain:tinkoff.ru", "domain:t-bank.ru", "domain:vtb.ru",
+    "domain:alfabank.ru", "domain:yandex.ru", "domain:ya.ru",
+    "domain:vk.com", "domain:vk.ru", "domain:mail.ru", "domain:avito.ru",
+    "domain:ozon.ru", "domain:wildberries.ru", "domain:kinopoisk.ru",
+    "geosite:private"
+]
+proxy_sites = []
 
-CUSTOM_DIRECT_RULE=""
-[[ -n "$CUSTOM_DIRECT_DOMAINS" ]] && CUSTOM_DIRECT_RULE="{\"type\": \"field\", \"domain\": [${CUSTOM_DIRECT_DOMAINS}], \"outboundTag\": \"direct\"},"
+for gid in sorted(GROUPS.keys(), key=int):
+    tag = group_dest_map.get(gid)
+    if not tag:
+        continue
+    g = GROUPS[gid]
+    
+    domain_list = list(g["geosites"])
+    for d in g["domains"]:
+        domain_list.append(f"domain:{d}")
+    
+    rule = {
+        "type": "field",
+        "domain": domain_list,
+        "outboundTag": tag
+    }
+    xray_rules.append(rule)
 
-CUSTOM_CASCADE_RULE=""
-[[ -n "$CUSTOM_CASCADE_DOMAINS" ]] && CUSTOM_CASCADE_RULE="{\"type\": \"field\", \"domain\": [${CUSTOM_CASCADE_DOMAINS}], \"outboundTag\": \"cascade-eu\"},"
+    clash_target = "DIRECT" if tag == "direct" else "PROXY"
+    for gs in g["geosites"]:
+        c_name = gs.replace("geosite:", "")
+        clash_rules.append(f"- GEOSITE,{c_name},{clash_target}")
+    for d in g["domains"]:
+        clash_rules.append(f"- DOMAIN-SUFFIX,{d},{clash_target}")
 
-ADDITIONAL_CLASH_RULES=""
-if [[ -n "$DIRECT_SERVICES_CHOICE" ]]; then
-    IFS=',' read -ra ADDR <<< "$DIRECT_SERVICES_CHOICE"
-    for item in "${ADDR[@]}"; do
-        item=$(echo "$item" | tr -d '[:space:]')
-        case "$item" in
-            1) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,telegram,DIRECT' ;;
-            2) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,discord,DIRECT' ;;
-            3) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,youtube,DIRECT' ;;
-            4) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,whatsapp,DIRECT' ;;
-            5) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,instagram,DIRECT\n- GEOSITE,facebook,DIRECT' ;;
-            6) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,twitter,DIRECT' ;;
-            7) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,openai,DIRECT' ;;
-            8) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,anthropic,DIRECT' ;;
-            9) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,cloudflare,DIRECT' ;;
-            10) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,amazon,DIRECT' ;;
-            11) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,google,DIRECT' ;;
-            12) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,spotify,DIRECT' ;;
-        esac
-    done
+    if tag == "direct":
+        for item in domain_list:
+            if item not in direct_sites:
+                direct_sites.append(item)
+    else:
+        for item in domain_list:
+            if item not in proxy_sites:
+                proxy_sites.append(item)
+
+rules_json_str = ""
+for r in xray_rules:
+    rules_json_str += json.dumps(r, indent=6) + ",\n"
+
+routing_obj = {
+    "Name": f"{sub_title} - Smart Routing",
+    "GlobalProxy": "true",
+    "RouteOrder": "block-direct-proxy",
+    "DomainStrategy": "IPIfNonMatch",
+    "DomesticDNSType": "DoH",
+    "DomesticDNSDomain": "https://dns.yandex.ru/dns-query",
+    "DomesticDNSIP": "77.88.8.8",
+    "RemoteDNSType": "DoH",
+    "RemoteDNSDomain": "https://cloudflare-dns.com/dns-query",
+    "RemoteDNSIP": "1.1.1.1",
+    "DnsHosts": {
+        "dns.yandex.ru": "77.88.8.8",
+        "cloudflare-dns.com": "1.1.1.1"
+    },
+    "DirectSites": direct_sites,
+    "DirectIp": [
+        "geoip:ru", "geoip:private", "127.0.0.0/8", "10.0.0.0/8",
+        "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
+        "224.0.0.0/4", "255.255.255.255"
+    ],
+    "ProxySites": proxy_sites,
+    "ProxyIp": [],
+    "BlockSites": ["geosite:category-ads-all"],
+    "BlockIp": []
+}
+raw_json = json.dumps(routing_obj, separators=(",", ":"), ensure_ascii=False)
+happ_b64 = base64.b64encode(raw_json.encode("utf-8")).decode("utf-8")
+
+output = {
+    "xray_rules": rules_json_str.rstrip(",\n"),
+    "clash_rules": "\n".join(clash_rules),
+    "happ_b64": happ_b64
+}
+print(json.dumps(output))
+PY_ROUTING_EOF
+)
+
+GROUP_ROUTING_RULES_JSON=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('xray_rules', ''))" "$GENERATED_CONFIGS" 2>/dev/null || echo "")
+ADDITIONAL_CLASH_RULES=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('clash_rules', ''))" "$GENERATED_CONFIGS" 2>/dev/null || echo "")
+ROUTING_B64=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('happ_b64', ''))" "$GENERATED_CONFIGS" 2>/dev/null || echo "")
+
+if [[ -n "$GROUP_ROUTING_RULES_JSON" ]]; then
+    GROUP_ROUTING_RULES_JSON="${GROUP_ROUTING_RULES_JSON},"
 fi
-
-if [[ -n "$CASCADE_SERVICES_CHOICE" ]]; then
-    IFS=',' read -ra ADDR <<< "$CASCADE_SERVICES_CHOICE"
-    for item in "${ADDR[@]}"; do
-        item=$(echo "$item" | tr -d '[:space:]')
-        case "$item" in
-            1) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,telegram,PROXY' ;;
-            2) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,discord,PROXY' ;;
-            3) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,youtube,PROXY' ;;
-            4) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,whatsapp,PROXY' ;;
-            5) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,instagram,PROXY\n- GEOSITE,facebook,PROXY' ;;
-            6) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,twitter,PROXY' ;;
-            7) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,openai,PROXY' ;;
-            8) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,anthropic,PROXY' ;;
-            9) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,cloudflare,PROXY' ;;
-            10) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,amazon,PROXY' ;;
-            11) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,google,PROXY' ;;
-            12) ADDITIONAL_CLASH_RULES+=$'\n- GEOSITE,spotify,PROXY' ;;
-        esac
-    done
-fi
-
 # Helper to parse external proxy share link (VLESS, Trojan, SS, SOCKS5) into Xray outbound JSON
 parse_cascade_outbound() {
     local url="$1"
@@ -2083,18 +2829,31 @@ def parse_link(link, tag="cascade-out"):
 
     return {"protocol": "freedom", "settings": {}, "tag": tag}
 
-res = parse_link(sys.argv[1])
+res = parse_link(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "cascade-out-1")
 print(json.dumps(res))
-' "$url" 2>/dev/null || echo '{"protocol": "freedom", "settings": {}, "tag": "cascade-out"}'
+' "$url" "${tag:-cascade-out-1}" 2>/dev/null || echo "{\"protocol\": \"freedom\", \"settings\": {}, \"tag\": \"${tag:-cascade-out-1}\"}"
 }
 
-CASCADE_OUTBOUND_JSON='{"protocol": "freedom", "settings": {}, "tag": "cascade-out"}'
-if [[ -n "$CASCADE_EU_URL" ]]; then
-    parsed_ob=$(parse_cascade_outbound "$CASCADE_EU_URL")
-    if [[ -n "$parsed_ob" && "$parsed_ob" != "null" ]]; then
-        CASCADE_OUTBOUND_JSON="$parsed_ob"
-        msg_ok "Внешнее каскадное подключение успешно распознано и настроено!"
-    fi
+CASCADE_OUTBOUNDS=()
+if [[ "$SERVER_ROLE" == "cascade" ]]; then
+    for ((i=1; i<=CASCADE_COUNT; i++)); do
+        link="${CASCADE_URLS[$i]}"
+        tag="${CASCADE_TAGS[$i]:-cascade-out-$i}"
+        if [[ -n "$link" ]]; then
+            ob_json
+            ob_json=$(parse_cascade_outbound "$link" "$tag")
+            if [[ -n "$ob_json" && "$ob_json" != "null" ]]; then
+                CASCADE_OUTBOUNDS+=("$ob_json")
+                msg_ok "Каскад #${i} (${CASCADE_ALIASES[$i]:-Exit-$i} -> ${tag}) успешно подключен!"
+            fi
+        fi
+    done
+fi
+
+if [[ ${#CASCADE_OUTBOUNDS[@]} -eq 0 ]]; then
+    CASCADE_OUTBOUNDS_JSON='{"protocol": "freedom", "settings": {}, "tag": "cascade-out-1"}'
+else
+    CASCADE_OUTBOUNDS_JSON=$(IFS=,; echo "${CASCADE_OUTBOUNDS[*]}")
 fi
 
 # Build complete xrayTemplateConfig JSON according to server role
@@ -2237,8 +2996,7 @@ elif [[ "$SERVER_ROLE" == "cascade" ]]; then
       {\"type\": \"field\", \"inboundTag\": [\"api\"], \"outboundTag\": \"api\"},
       {\"type\": \"field\", \"ip\": [\"geoip:private\"], \"outboundTag\": \"blocked\"},
       {\"type\": \"field\", \"domain\": [\"geosite:category-ads-all\"], \"outboundTag\": \"blocked\"},
-      ${CUSTOM_DIRECT_RULE}
-      ${CUSTOM_CASCADE_RULE}
+      ${GROUP_ROUTING_RULES_JSON}
       {
         \"type\": \"field\",
         \"domain\": [
@@ -2257,7 +3015,7 @@ elif [[ "$SERVER_ROLE" == "cascade" ]]; then
   \"outbounds\": [
     {\"protocol\": \"freedom\", \"settings\": {}, \"tag\": \"direct\"},
     {\"protocol\": \"blackhole\", \"settings\": {}, \"tag\": \"blocked\"},
-    ${CASCADE_OUTBOUND_JSON}
+    ${CASCADE_OUTBOUNDS_JSON}
   ]
 }"
 else
@@ -2322,7 +3080,7 @@ else
       {\"type\": \"field\", \"inboundTag\": [\"api\"], \"outboundTag\": \"api\"},
       {\"type\": \"field\", \"ip\": [\"geoip:private\"], \"outboundTag\": \"blocked\"},
       {\"type\": \"field\", \"domain\": [\"geosite:category-ads-all\"], \"outboundTag\": \"blocked\"},
-      ${CUSTOM_DIRECT_RULE}
+      ${GROUP_ROUTING_RULES_JSON}
       {
         \"type\": \"field\",
         \"domain\": [
@@ -2349,111 +3107,6 @@ fi
 sub_uri="https://${domain}/${sub_path}/"
 json_uri="https://${domain}/${web_path}?name="
 
-# Generate client-side routing rules for Happ, Incy and JSON subscriptions (RU to DIRECT, Ads to REJECT, rest PROXY)
-ROUTING_B64=$(python3 -c '
-import sys, json, base64
-
-direct_choice = sys.argv[1] if len(sys.argv) > 1 else ""
-cascade_choice = sys.argv[2] if len(sys.argv) > 2 else ""
-
-service_map = {
-    "1": ["geosite:telegram"],
-    "2": ["geosite:discord"],
-    "3": ["geosite:youtube"],
-    "4": ["geosite:whatsapp"],
-    "5": ["geosite:instagram", "geosite:facebook"],
-    "6": ["geosite:twitter"],
-    "7": ["geosite:openai"],
-    "8": ["geosite:anthropic"],
-    "9": ["geosite:cloudflare"],
-    "10": ["geosite:amazon"],
-    "11": ["geosite:google"],
-    "12": ["geosite:spotify"]
-}
-
-extra_direct = []
-for item in direct_choice.split(","):
-    item = item.strip()
-    if item in service_map:
-        extra_direct.extend(service_map[item])
-
-extra_proxy = []
-for item in cascade_choice.split(","):
-    item = item.strip()
-    if item in service_map:
-        extra_proxy.extend(service_map[item])
-
-direct_sites = [
-    "geosite:ru",
-    "domain:ru",
-    "domain:su",
-    "domain:xn--p1ai",
-    "geosite:category-gov-ru",
-    "domain:gosuslugi.ru",
-    "domain:sberbank.ru",
-    "domain:tinkoff.ru",
-    "domain:t-bank.ru",
-    "domain:vtb.ru",
-    "domain:alfabank.ru",
-    "domain:yandex.ru",
-    "domain:ya.ru",
-    "domain:vk.com",
-    "domain:vk.ru",
-    "domain:mail.ru",
-    "domain:avito.ru",
-    "domain:ozon.ru",
-    "domain:wildberries.ru",
-    "domain:kinopoisk.ru",
-    "geosite:private"
-]
-for s in extra_direct:
-    if s not in direct_sites:
-        direct_sites.append(s)
-
-proxy_sites = []
-for s in extra_proxy:
-    if s not in proxy_sites:
-        proxy_sites.append(s)
-
-routing_sub_title = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else "OmniStack"
-routing_obj = {
-    "Name": f"{routing_sub_title} - Direct RU",
-    "GlobalProxy": "true",
-    "RouteOrder": "block-direct-proxy",
-    "DomainStrategy": "IPIfNonMatch",
-    "DomesticDNSType": "DoH",
-    "DomesticDNSDomain": "https://dns.yandex.ru/dns-query",
-    "DomesticDNSIP": "77.88.8.8",
-    "RemoteDNSType": "DoH",
-    "RemoteDNSDomain": "https://cloudflare-dns.com/dns-query",
-    "RemoteDNSIP": "1.1.1.1",
-    "DnsHosts": {
-        "dns.yandex.ru": "77.88.8.8",
-        "cloudflare-dns.com": "1.1.1.1"
-    },
-    "DirectSites": direct_sites,
-    "DirectIp": [
-        "geoip:ru",
-        "geoip:private",
-        "127.0.0.0/8",
-        "10.0.0.0/8",
-        "172.16.0.0/12",
-        "192.168.0.0/16",
-        "169.254.0.0/16",
-        "224.0.0.0/4",
-        "255.255.255.255"
-    ],
-    "ProxySites": proxy_sites,
-    "ProxyIp": [],
-    "BlockSites": [
-        "geosite:category-ads-all"
-    ],
-    "BlockIp": []
-}
-
-raw_json = json.dumps(routing_obj, separators=(",", ":"), ensure_ascii=False)
-print(base64.b64encode(raw_json.encode("utf-8")).decode("utf-8"))
-' "$DIRECT_SERVICES_CHOICE" "$CASCADE_SERVICES_CHOICE" "$SUB_TITLE")
 HAPP_ROUTING_RULE="happ://routing/onadd/${ROUTING_B64}"
 INCY_ROUTING_RULE="incy://routing/onadd/${ROUTING_B64}"
 
@@ -2692,12 +3345,12 @@ INSERT INTO "inbounds" ("id","user_id","up","down","total","remark","enable","ex
     7,'1','0','0','0','${SERVER_FLAG} WireGuard','1','0','','${WG_PORT}','wireguard',
     '{
         "secretKey": "${WG_SERVER_PRIV_KEY}",
-        "peers": [{"publicKey": "${WG_CLIENT_PUB_KEY}", "allowedIPs": ["10.0.0.2/32"], "email": "${CLIENT_EMAIL}"}],
+        "peers": [{"publicKey": "${WG_CLIENT_PUB_KEY}", "allowedIPs": ["10.0.0.2/32"], "email": "${CLIENT_EMAIL}", "keepAlive": 0}],
         "clients": [{"email": "${CLIENT_EMAIL}", "enable": true, "privateKey": "${WG_CLIENT_PRIV_KEY}", "publicKey": "${WG_CLIENT_PUB_KEY}", "allowedIPs": ["10.0.0.2/32"], "subId": "${CLIENT_SUB_ID}", "limitIp": 0, "totalGB": 0, "expiryTime": 0, "reset": 0}]
     }',
     '{}',
     'inbound-${WG_PORT}',
-    '{"enabled": false}'
+    '{"enabled": true, "destOverride": ["http","tls","quic"], "metadataOnly": false, "routeOnly": false}'
 );
 
 -- 8. AmneziaWG 1.0 (Obfuscated UDP ${AWG1_PORT})
@@ -2744,7 +3397,7 @@ INSERT INTO "inbounds" ("id","user_id","up","down","total","remark","enable","ex
     }',
     '{}',
     'inbound-${AWG1_PORT}',
-    '{"enabled": false}'
+    '{"enabled": true, "destOverride": ["http","tls","quic"], "metadataOnly": false, "routeOnly": false}'
 );
 
 -- 9. AmneziaWG 3.1 (DPI-Shield UDP ${AWG3_PORT})
@@ -2791,7 +3444,7 @@ INSERT INTO "inbounds" ("id","user_id","up","down","total","remark","enable","ex
     }',
     '{}',
     'inbound-${AWG3_PORT}',
-    '{"enabled": false}'
+    '{"enabled": true, "destOverride": ["http","tls","quic"], "metadataOnly": false, "routeOnly": false}'
 );
 
 -- Single Master Client in 3X-UI Clients Table
@@ -3241,7 +3894,11 @@ chmod +x /usr/local/bin/omnistack
 ln -sf /usr/local/bin/omnistack /usr/bin/omnistack 2>/dev/null || true
 ln -sf /usr/local/bin/omnistack /usr/local/bin/x-ui-setup 2>/dev/null || true
 ln -sf /usr/local/bin/omnistack /usr/bin/x-ui-setup 2>/dev/null || true
-msg_ok "Installed 'omnistack' command (/usr/local/bin/omnistack)"
+ln -sf /usr/local/bin/omnistack /usr/local/bin/omnistack-tg 2>/dev/null || true
+ln -sf /usr/local/bin/omnistack /usr/local/bin/omnistack-wg 2>/dev/null || true
+ln -sf /usr/local/bin/omnistack /usr/bin/omnistack-tg 2>/dev/null || true
+ln -sf /usr/local/bin/omnistack /usr/bin/omnistack-wg 2>/dev/null || true
+msg_ok "Installed 'omnistack', 'omnistack-tg', 'omnistack-wg' commands (/usr/local/bin/omnistack)"
 
 ################################## Standalone WireGuard / AWG Client Configs ###
 CLIENT_CONFIGS_DIR="/root/client_configs"
