@@ -557,429 +557,6 @@ EOF
 # ==============================================================================
 # WireGuard & MikroTik Client Management Submenu
 # ==============================================================================
-interactive_wireguard_menu() {
-    if [[ ! -f "$XUIDB" ]]; then
-        msg_err "База данных X-UI ($XUIDB) не найдена! Убедитесь, что OmniStack установлен."
-        read -rp "Нажмите Enter для возврата..." _
-        return
-    fi
-
-    while true; do
-        show_banner
-        echo -e "${BOLD}${CYAN}=== 🛡️  Управление WireGuard и экспорт клиентских конфигов ===${NC}\n"
-
-        # Query WireGuard inbound and clients from SQLite via Python
-        local wg_raw_data
-        wg_raw_data=$(python3 - "$XUIDB" 2>/dev/null << 'PYEOF'
-import sys, sqlite3, json, subprocess
-
-db_path = sys.argv[1]
-conn = sqlite3.connect(db_path)
-c = conn.cursor()
-c.execute("SELECT id, port, settings FROM inbounds WHERE protocol='wireguard' LIMIT 1;")
-ib_row = c.fetchone()
-if not ib_row:
-    sys.exit(1)
-
-ib_id, port, settings_str = ib_row
-try:
-    settings = json.loads(settings_str)
-except Exception:
-    settings = {}
-priv_b64 = settings.get('secretKey', '')
-pub_b64 = ''
-if priv_b64:
-    try:
-        res = subprocess.run(['wg', 'pubkey'], input=priv_b64.encode(), stdout=subprocess.PIPE, check=True)
-        pub_b64 = res.stdout.decode().strip()
-    except Exception:
-        try:
-            import base64
-            from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-            from cryptography.hazmat.primitives import serialization
-            priv = X25519PrivateKey.from_private_bytes(base64.b64decode(priv_b64))
-            pub_b64 = base64.b64encode(priv.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode()
-        except Exception:
-            pub_b64 = ''
-
-print(f"INBOUND|{ib_id}|{port}|{pub_b64}")
-
-c.execute("SELECT id, email, coalesce(wg_private_key,''), coalesce(wg_public_key,''), coalesce(wg_allowed_ips,'') FROM clients;")
-for cid, email, cpriv, cpub, cips in c.fetchall():
-    c.execute("SELECT count(*) FROM client_inbounds WHERE client_id=? AND inbound_id=?", (cid, ib_id))
-    is_linked = 1 if (c.fetchone()[0] > 0 and cpub) else 0
-    print(f"CLIENT|{cid}|{email}|{cpriv}|{cpub}|{cips}|{is_linked}")
-conn.close()
-PYEOF
-)
-
-        if [[ -z "$wg_raw_data" ]] || ! echo "$wg_raw_data" | grep -q "^INBOUND|"; then
-            msg_warn "Инбаунд WireGuard не найден в базе данных 3X-UI!"
-            read -rp "Нажмите Enter для возврата..." _
-            return
-        fi
-
-        local wg_inbound_id="" wg_port="" wg_server_pub=""
-        local -a client_ids client_emails client_privs client_pubs client_ips client_linked
-        local idx=0
-
-        while IFS='|' read -r r_type c1 c2 c3 c4 c5 c6; do
-            if [[ "$r_type" == "INBOUND" ]]; then
-                wg_inbound_id="$c1"
-                wg_port="$c2"
-                wg_server_pub="$c3"
-            elif [[ "$r_type" == "CLIENT" ]]; then
-                idx=$((idx + 1))
-                client_ids[$idx]="$c1"
-                client_emails[$idx]="$c2"
-                client_privs[$idx]="$c3"
-                client_pubs[$idx]="$c4"
-                client_ips[$idx]="$c5"
-                client_linked[$idx]="$c6"
-            fi
-        done <<< "$wg_raw_data"
-
-        # Get server public host / domain
-        local srv_host=""
-        srv_host=$(sqlite3 "$XUIDB" "SELECT value FROM settings WHERE key='subURI' LIMIT 1;" 2>/dev/null | sed -E 's|https?://([^/:]+).*|\1|' | tr -d '[:space:]')
-        if [[ -z "$srv_host" || ! "$srv_host" =~ \. ]]; then
-            srv_host=$(ls -1 /etc/nginx/sites-available/ 2>/dev/null | grep -v '80.conf' | head -n1 | tr -d '[:space:]')
-        fi
-        if [[ -z "$srv_host" || ! "$srv_host" =~ \. ]]; then
-            srv_host=$(curl -s4 -m 3 ipv4.icanhazip.com 2>/dev/null | tr -d '[:space:]')
-        fi
-        srv_host="${srv_host:-SERVER_IP}"
-
-        echo -e "${BOLD}Параметры сервера WireGuard:${NC}"
-        echo -e "  • Inbound ID:        ${CYAN}${wg_inbound_id}${NC}"
-        echo -e "  • Порт (UDP):        ${CYAN}${wg_port}${NC}"
-        echo -e "  • Публичный ключ:    ${CYAN}${wg_server_pub}${NC}"
-        echo -e "  • Хост / Домен:      ${CYAN}${srv_host}${NC}"
-        echo ""
-
-        if [[ "$idx" -eq 0 ]]; then
-            msg_warn "В панели 3X-UI нет зарегистрированных клиентов!"
-            read -rp "Нажмите Enter для возврата..." _
-            return
-        fi
-
-        echo -e "${BOLD}Список клиентов в базе данных:${NC}"
-        for ((i=1; i<=idx; i++)); do
-            local c_mail="${client_emails[$i]}"
-            local c_ip="${client_ips[$i]}"
-            local c_st="${client_linked[$i]}"
-            if [[ "$c_st" == "1" ]]; then
-                echo -e "  ${CYAN}[$i]${NC} ${BOLD}${c_mail}${NC} (IP: ${c_ip:-10.0.0.X}) -> ${GREEN}✔ Привязан к WireGuard${NC}"
-            else
-                echo -e "  ${CYAN}[$i]${NC} ${BOLD}${c_mail}${NC} -> ${YELLOW}⚠ Не привязан к WireGuard${NC}"
-            fi
-        done
-
-
-        echo ""
-        echo -e "  ${NC}[0] 🚪 Назад в главное меню${NC}"
-        echo ""
-        read -rp "Выберите номер клиента для экспорта/привязки [1-$idx, 0=выход]: " c_choice
-        if [[ "$c_choice" == "0" || -z "$c_choice" ]]; then
-            break
-        fi
-
-        if [[ ! "$c_choice" =~ ^[0-9]+$ ]] || [[ "$c_choice" -lt 1 || "$c_choice" -gt "$idx" ]]; then
-            msg_warn "Неверный выбор."
-            sleep 1
-            continue
-        fi
-
-        local sel_id="${client_ids[$c_choice]}"
-        local sel_email="${client_emails[$c_choice]}"
-        local sel_priv="${client_privs[$c_choice]}"
-        local sel_pub="${client_pubs[$c_choice]}"
-        local sel_ip="${client_ips[$c_choice]}"
-        local sel_status="${client_linked[$c_choice]}"
-
-        # Auto-link client if not linked
-        if [[ "$sel_status" != "1" || -z "$sel_pub" || -z "$sel_priv" || -z "$sel_ip" ]]; then
-            echo ""
-            msg_step "Клиент '${sel_email}' не привязан к WireGuard или не имеет ключей. Привязываем..."
-            
-            # Generate keypair if missing
-            if [[ -z "$sel_priv" || -z "$sel_pub" ]]; then
-                read -r sel_priv sel_pub < <(gen_wg_keypair)
-            fi
-            
-            # Allocate next free IP in 10.0.0.0/24
-            if [[ -z "$sel_ip" || ! "$sel_ip" =~ ^10\.0\.0\. ]]; then
-                local next_ip
-                next_ip=$(python3 - "$XUIDB" 2>/dev/null << 'PYEOF'
-import sys, sqlite3
-db_path = sys.argv[1]
-conn = sqlite3.connect(db_path)
-c = conn.cursor()
-c.execute("SELECT wg_allowed_ips FROM clients WHERE wg_allowed_ips LIKE '10.0.0.%';")
-used = set()
-for r in c.fetchall():
-    try:
-        used.add(int(r[0].split('/')[0].split('.')[-1]))
-    except Exception:
-        pass
-for i in range(2, 255):
-    if i not in used:
-        print(f"10.0.0.{i}/32")
-        break
-conn.close()
-PYEOF
-)
-                sel_ip="${next_ip:-10.0.0.2/32}"
-            fi
-
-            # Update clients table
-            sqlite3 "$XUIDB" "UPDATE clients SET wg_private_key='${sel_priv}', wg_public_key='${sel_pub}', wg_allowed_ips='${sel_ip}', updated_at=strftime('%s','now')*1000 WHERE id='${sel_id}';"
-
-            # Insert into client_inbounds
-            sqlite3 "$XUIDB" "INSERT OR IGNORE INTO client_inbounds (client_id, inbound_id, flow_override, created_at) VALUES ('${sel_id}', '${wg_inbound_id}', '', strftime('%s','now')*1000);"
-
-            # Update settings JSON in inbounds table to sync peers
-            python3 -c "
-import sqlite3, json, sys
-
-db_path, inbound_id, email, pub_key, ip = sys.argv[1:6]
-conn = sqlite3.connect(db_path)
-c = conn.cursor()
-c.execute('SELECT settings FROM inbounds WHERE id=?', (inbound_id,))
-row = c.fetchone()
-if row:
-    settings = json.loads(row[0])
-    peers = settings.get('peers', [])
-    peers = [p for p in peers if p.get('email') != email and p.get('publicKey') != pub_key]
-    peers.append({'publicKey': pub_key, 'allowedIPs': [ip], 'email': email, 'keepAlive': 0})
-    settings['peers'] = peers
-    c.execute('UPDATE inbounds SET settings=? WHERE id=?', (json.dumps(settings), inbound_id))
-    conn.commit()
-conn.close()
-" "$XUIDB" "$wg_inbound_id" "$sel_email" "$sel_pub" "$sel_ip"
-
-            # Restart X-UI to reload config.json
-            systemctl restart x-ui 2>/dev/null || true
-            msg_ok "Клиент '${sel_email}' успешно привязан к WireGuard с IP ${sel_ip}!"
-        fi
-
-        # Client details menu
-        while true; do
-            echo ""
-            echo -e "${BOLD}${PURPLE}=== Конфигурация WireGuard для: ${sel_email} ===${NC}"
-            echo -e "  • Client IP:         ${CYAN}${sel_ip}${NC}"
-            echo -e "  • Client Public Key: ${CYAN}${sel_pub}${NC}"
-            echo -e "  • Server Endpoint:   ${CYAN}${srv_host}:${wg_port}${NC}"
-            echo ""
-            echo -e "  [1] 📄 Показать стандартный конфиг wireguard.conf и сохранить в файл"
-            echo -e "  [2] 📱 Показать QR-код в терминале (для мобильного WireGuard)"
-            echo -e "  [3] 📟 Сгенерировать готовые команды для MikroTik RouterOS"
-            echo -e "  [4] 🌐 Готовые параметры для Keenetic (Web UI и CLI ndm)"
-            echo -e "  [5] 🐱 Готовый блок прокси для Mihomo / Clash.Meta (YAML)"
-            echo -e "  [6] 🔑 Привязать внешний публичный ключ (сгенерированный на роутере)"
-            echo -e "  [0] 🚪 Назад к списку клиентов"
-            echo ""
-            read -rp "Выберите действие [0-6]: " act_choice
-
-            case "$act_choice" in
-                1)
-                    local conf_path="/root/client_configs/wireguard_${sel_email}.conf"
-                    mkdir -p /root/client_configs
-                    cat > "$conf_path" << CONF_EOF
-[Interface]
-PrivateKey = ${sel_priv}
-Address = ${sel_ip}
-DNS = 1.1.1.1, 8.8.8.8
-
-[Peer]
-PublicKey = ${wg_server_pub}
-Endpoint = ${srv_host}:${wg_port}
-AllowedIPs = 0.0.0.0/0, ::/0
-PersistentKeepalive = 25
-CONF_EOF
-                    chmod 600 "$conf_path"
-                    echo ""
-                    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-                    cat "$conf_path"
-                    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-                    msg_ok "Конфиг сохранен в: ${conf_path}"
-                    echo ""
-                    read -rp "Нажмите Enter для продолжения..." _
-                    ;;
-                2)
-                    echo ""
-                    msg_step "Генерация QR-кода..."
-                    local temp_conf
-                    temp_conf=$(mktemp)
-                    cat > "$temp_conf" << QR_EOF
-[Interface]
-PrivateKey = ${sel_priv}
-Address = ${sel_ip}
-DNS = 1.1.1.1, 8.8.8.8
-
-[Peer]
-PublicKey = ${wg_server_pub}
-Endpoint = ${srv_host}:${wg_port}
-AllowedIPs = 0.0.0.0/0, ::/0
-PersistentKeepalive = 25
-QR_EOF
-                    if ! command -v qrencode &>/dev/null; then
-                        $Pak -y install qrencode &>/dev/null || true
-                    fi
-
-                    if command -v qrencode &>/dev/null; then
-                        qrencode -t ansiutf8 < "$temp_conf"
-                    else
-                        msg_warn "Утилита qrencode не найдена. Установите: apt install -y qrencode"
-                    fi
-                    rm -f "$temp_conf"
-                    echo ""
-                    msg_inf "Отсканируйте этот QR-код через официальное приложение WireGuard на смартфоне."
-                    echo ""
-                    read -rp "Нажмите Enter для продолжения..." _
-                    ;;
-                3)
-                    local net_ip="${sel_ip%/*}"
-                    local net_base="${net_ip%.*}.0"
-                    echo ""
-                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-                    echo -e "${BOLD}Готовые команды для терминала MikroTik RouterOS (v7+):${NC}"
-                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-                    cat << MIKROTIK_EOF
-
-# 1. Создание интерфейса WireGuard
-/interface wireguard add name="wg-omnistack" listen-port=13231 private-key="${sel_priv}" comment="OmniStack WireGuard"
-
-# 2. Назначение IP-адреса на интерфейс
-/ip address add address=${sel_ip} network=${net_base} interface="wg-omnistack" comment="OmniStack WG IP"
-
-# 3. Добавление серверного Peer
-/interface wireguard peers add interface="wg-omnistack" public-key="${wg_server_pub}" endpoint-address="${srv_host}" endpoint-port=${wg_port} allowed-address=0.0.0.0/0 persistent-keepalive=25 comment="OmniStack Server"
-
-# 4. Настройка NAT Masquerade (для устройств в локальной сети за MikroTik)
-/ip firewall nat add chain=srcnat out-interface="wg-omnistack" action=masquerade comment="OmniStack WG Masquerade"
-
-MIKROTIK_EOF
-                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-                    msg_inf "Скопируйте и вставьте эти команды в терминал WinBox / SSH MikroTik."
-                    echo ""
-                    read -rp "Нажмите Enter для продолжения..." _
-                    ;;
-                4)
-                    local net_ip="${sel_ip%/*}"
-                    echo ""
-                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-                    echo -e "${BOLD}Параметры для добавления WireGuard в роутере Keenetic:${NC}"
-                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-                    echo -e "В веб-интерфейсе Keenetic перейдите в: ${YELLOW}Сетевые правила ➔ Другие подключения ➔ Добавить подключение (WireGuard)${NC}
-"
-                    echo -e "  • ${BOLD}Название подключения:${NC}   OmniStack WG"
-                    echo -e "  • ${BOLD}Использовать для выхода в Интернет:${NC} [V] Включить галочку"
-                    echo -e "  • ${BOLD}Закрытый ключ (Private Key):${NC}       ${CYAN}${sel_priv}${NC}"
-                    echo -e "  • ${BOLD}IP-адрес:${NC}                            ${CYAN}${net_ip}${NC}"
-                    echo -e "  • ${BOLD}Маска подсети:${NC}                       255.255.255.255"
-                    echo -e "  • ${BOLD}DNS-серверы:${NC}                         1.1.1.1, 8.8.8.8"
-                    echo ""
-                    echo -e "${BOLD}В блоке «Узлы» (Peers) нажмите «Добавить узел»:${NC}"
-                    echo -e "  • ${BOLD}Название узла:${NC}         OmniStack-Server"
-                    echo -e "  • ${BOLD}Открытый ключ (Public Key сервера):${NC} ${CYAN}${wg_server_pub}${NC}"
-                    echo -e "  • ${BOLD}Адрес узла (Endpoint):${NC} ${CYAN}${srv_host}${NC}"
-                    echo -e "  • ${BOLD}Порт узла:${NC}             ${CYAN}${wg_port}${NC}"
-                    echo -e "  • ${BOLD}Разрешенные подсети:${NC}   0.0.0.0/0"
-                    echo -e "  • ${BOLD}Проверка активности:${NC}   25 сек"
-                    echo ""
-                    echo -e "${BOLD}Команды для терминала Keenetic CLI (ndm):${NC}"
-                    cat << KEENET_EOF
-interface Wireguard0
-    description OmniStack
-    ip address ${net_ip} 255.255.255.255
-    wireguard private-key ${sel_priv}
-    wireguard peer ${wg_server_pub} endpoint ${srv_host} ${wg_port}
-    wireguard peer ${wg_server_pub} keepalive 25
-    wireguard peer ${wg_server_pub} prefix 0.0.0.0 0.0.0.0
-    up
-system configuration save
-KEENET_EOF
-                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-                    echo ""
-                    read -rp "Нажмите Enter для продолжения..." _
-                    ;;
-                5)
-                    local net_ip="${sel_ip%/*}"
-                    echo ""
-                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-                    echo -e "${BOLD}Конфигурация для Mihomo / Clash.Meta (вставка в блок proxies):${NC}"
-                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-                    cat << MIHOMO_EOF
-
-proxies:
-  - name: "OmniStack-WireGuard"
-    type: wireguard
-    server: "${srv_host}"
-    port: ${wg_port}
-    ip: "${net_ip}"
-    public-key: "${wg_server_pub}"
-    private-key: "${sel_priv}"
-    udp: true
-    remote-dns-resolve: true
-    dns:
-      - "1.1.1.1"
-      - "8.8.8.8"
-    mtu: 1420
-
-MIHOMO_EOF
-                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-                    msg_inf "Скопируйте этот блок в ваш файл config.yaml (Mihomo / Clash.Meta / xkeen)."
-                    echo ""
-                    read -rp "Нажмите Enter для продолжения..." _
-                    ;;
-                6)
-                    echo ""
-                    echo -e "${BOLD}${CYAN}Привязка внешнего публичного ключа:${NC}"
-                    echo -e "Если вы сгенерировали пару ключей непосредственно на роутере (Keenetic, MikroTik и др.),"
-                    echo -e "вставьте сгенерированный там Public Key ниже:"
-                    read -rp "Введите Public Key клиента: " user_wg_pub
-                    user_wg_pub=$(echo "$user_wg_pub" | tr -d '[:space:]')
-                    if [[ ${#user_wg_pub} -ge 40 ]]; then
-                        sqlite3 "$XUIDB" "UPDATE clients SET wg_public_key='${user_wg_pub}', updated_at=strftime('%s','now')*1000 WHERE id='${sel_id}';"
-                        python3 -c "
-import sqlite3, json, sys
-db_path, inbound_id, email, pub_key, ip = sys.argv[1:6]
-conn = sqlite3.connect(db_path)
-c = conn.cursor()
-c.execute('SELECT settings FROM inbounds WHERE id=?', (inbound_id,))
-row = c.fetchone()
-if row:
-    settings = json.loads(row[0])
-    peers = settings.get('peers', [])
-    peers = [p for p in peers if p.get('email') != email]
-    peers.append({'publicKey': pub_key, 'allowedIPs': [ip], 'email': email, 'keepAlive': 0})
-    settings['peers'] = peers
-    c.execute('UPDATE inbounds SET settings=? WHERE id=?', (json.dumps(settings), inbound_id))
-    conn.commit()
-conn.close()
-" "$XUIDB" "$wg_inbound_id" "$sel_email" "$user_wg_pub" "$sel_ip"
-                        systemctl restart x-ui 2>/dev/null || true
-                        sel_pub="$user_wg_pub"
-                        msg_ok "Публичный ключ успешно обновлен!"
-                    else
-                        msg_err "Некорректный формат публичного ключа!"
-                    fi
-                    echo ""
-                    read -rp "Нажмите Enter для продолжения..." _
-                    ;;
-                0|q|exit)
-                    break
-                    ;;
-                *)
-                    msg_warn "Неверный выбор."
-                    sleep 1
-                    ;;
-            esac
-        done
-    done
-}
-
 # ==============================================================================
 # Weekly GeoIP & Geosite Auto-Update Setup
 # ==============================================================================
@@ -1802,9 +1379,6 @@ while [ "$#" -gt 0 ]; do
         -tg-menu|--tg-menu|-tg)
             interactive_telegram_bot_menu
             exit 0;;
-        -wg-menu|--wg-menu|-wg)
-            interactive_wireguard_menu
-            exit 0;;
         -reality_target)   REALITY_DEFAULT_TARGET="$2"; shift 2;;
         -reality_sni)      REALITY_DEFAULT_SNI="$2"; shift 2;;
         -version)          PANEL_VER="$2"; shift 2;;
@@ -2018,15 +1592,15 @@ if [[ -z "$SERVER_ROLE" ]]; then
         echo -e "  ${YELLOW}[8] 🔄 Обновить базы GeoIP и Geosite${NC}"
         echo -e "      ↳ Скачать свежие базы правил маршрутизации (Loyalsoldier / v2fly) для Xray."
         echo ""
-        echo -e "  ${BLUE}[9] 🛠️  Установка базового ПО сервера (base-vps-soft-install)${NC}"
+        echo -e "  ${BLUE}[8] 🛠️  Установка базового ПО сервера (base-vps-soft-install)${NC}"
         echo -e "      ↳ Системные утилиты, безопасность и базовый софт с github.com/TViN-X/base-vps-soft-install."
         echo ""
-        echo -e "  ${RED}[10] ❌ Удалить OmniStack полностью${NC}"
+        echo -e "  ${RED}[9] ❌ Удалить OmniStack полностью${NC}"
         echo -e "      ↳ Полная очистка: Nginx, 3X-UI, бэкапы, сертификаты и конфигурации."
         echo ""
         echo -e "  ${NC}[0] 🚪 Выход${NC}"
         echo ""
-        read -rp "Ваш выбор [0-10]: " menu_choice
+        read -rp "Ваш выбор [0-9]: " menu_choice
 
         case "$menu_choice" in
             1) SERVER_ROLE="exit"; break ;;
@@ -2046,9 +1620,6 @@ if [[ -z "$SERVER_ROLE" ]]; then
                 interactive_telegram_bot_menu
                 ;;
             7)
-                interactive_wireguard_menu
-                ;;
-            8)
                 if [[ -x /usr/local/bin/x-ui-geodata-update.sh ]]; then
                     /usr/local/bin/x-ui-geodata-update.sh
                 else
@@ -2057,13 +1628,13 @@ if [[ -z "$SERVER_ROLE" ]]; then
                 echo ""
                 read -rp "Нажмите Enter для возврата в главное меню..." _
                 ;;
-            9)
+            8)
                 msg_step "Запуск установки базового ПО с github.com/TViN-X/base-vps-soft-install..."
                 bash <(curl -fsSL https://raw.githubusercontent.com/TViN-X/base-vps-soft-install/master/install.sh)
                 echo ""
                 read -rp "Нажмите Enter для возврата в главное меню..." _
                 ;;
-            10)
+            9)
                 echo ""
                 read -rp "Вы действительно хотите полностью удалить OmniStack? [y/N]: " confirm_un
                 if [[ "$confirm_un" =~ ^[Yy]$ ]]; then
@@ -3965,28 +3536,12 @@ ln -sf /usr/local/bin/omnistack /usr/bin/omnistack 2>/dev/null || true
 ln -sf /usr/local/bin/omnistack /usr/local/bin/x-ui-setup 2>/dev/null || true
 ln -sf /usr/local/bin/omnistack /usr/bin/x-ui-setup 2>/dev/null || true
 ln -sf /usr/local/bin/omnistack /usr/local/bin/omnistack-tg 2>/dev/null || true
-ln -sf /usr/local/bin/omnistack /usr/local/bin/omnistack-wg 2>/dev/null || true
 ln -sf /usr/local/bin/omnistack /usr/bin/omnistack-tg 2>/dev/null || true
-ln -sf /usr/local/bin/omnistack /usr/bin/omnistack-wg 2>/dev/null || true
-msg_ok "Installed 'omnistack', 'omnistack-tg', 'omnistack-wg' commands (/usr/local/bin/omnistack)"
+msg_ok "Installed 'omnistack', 'omnistack-tg' commands (/usr/local/bin/omnistack)"
 
 ################################## Standalone WireGuard / AWG Client Configs ###
 CLIENT_CONFIGS_DIR="/root/client_configs"
 mkdir -p "$CLIENT_CONFIGS_DIR"
-
-# 1. WireGuard Client Configuration
-cat > "$CLIENT_CONFIGS_DIR/wireguard_client.conf" << EOF
-[Interface]
-PrivateKey = ${WG_CLIENT_PRIV_KEY}
-Address = 10.0.0.2/32
-DNS = 1.1.1.1, 8.8.8.8
-
-[Peer]
-PublicKey = ${WG_SERVER_PUB_KEY}
-Endpoint = ${domain}:${WG_PORT}
-AllowedIPs = 0.0.0.0/0, ::/0
-PersistentKeepalive = 25
-EOF
 
 # 2. AmneziaWG 1.0 Client Configuration
 cat > "$CLIENT_CONFIGS_DIR/amneziawg1_client.conf" << EOF
@@ -4108,7 +3663,6 @@ echo -e "   • VLESS-Reality: ${VLESS_REALITY_LINK}"
 echo -e "   • Hysteria 2:    ${HYSTERIA2_LINK}"
 echo -e ""
 echo -e "${BOLD}${CYAN}🛡️ Standalone WireGuard / AmneziaWG (High Ports 30000+):${NC}"
-echo -e "   • WireGuard (Port ${WG_PORT}):      ${CLIENT_CONFIGS_DIR}/wireguard_client.conf"
 echo -e "   • AmneziaWG 1.0 (Port ${AWG1_PORT}):  ${CLIENT_CONFIGS_DIR}/amneziawg1_client.conf"
 echo -e "   • AmneziaWG 3.1 (Port ${AWG3_PORT}):  ${CLIENT_CONFIGS_DIR}/amneziawg3_client.conf"
 echo -e ""
