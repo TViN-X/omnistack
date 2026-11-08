@@ -774,10 +774,12 @@ conn.close()
             echo -e "  [1] 📄 Показать стандартный конфиг wireguard.conf и сохранить в файл"
             echo -e "  [2] 📱 Показать QR-код в терминале (для мобильного WireGuard)"
             echo -e "  [3] 📟 Сгенерировать готовые команды для MikroTik RouterOS"
-            echo -e "  [4] 🔑 Привязать внешний публичный ключ (сгенерированный на роутере)"
+            echo -e "  [4] 🌐 Готовые параметры для Keenetic (Web UI и CLI ndm)"
+            echo -e "  [5] 🐱 Готовый блок прокси для Mihomo / Clash.Meta (YAML)"
+            echo -e "  [6] 🔑 Привязать внешний публичный ключ (сгенерированный на роутере)"
             echo -e "  [0] 🚪 Назад к списку клиентов"
             echo ""
-            read -rp "Выберите действие [0-4]: " act_choice
+            read -rp "Выберите действие [0-6]: " act_choice
 
             case "$act_choice" in
                 1)
@@ -864,9 +866,77 @@ MIKROTIK_EOF
                     read -rp "Нажмите Enter для продолжения..." _
                     ;;
                 4)
+                    local net_ip="${sel_ip%/*}"
+                    echo ""
+                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                    echo -e "${BOLD}Параметры для добавления WireGuard в роутере Keenetic:${NC}"
+                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                    echo -e "В веб-интерфейсе Keenetic перейдите в: ${YELLOW}Сетевые правила ➔ Другие подключения ➔ Добавить подключение (WireGuard)${NC}
+"
+                    echo -e "  • ${BOLD}Название подключения:${NC}   OmniStack WG"
+                    echo -e "  • ${BOLD}Использовать для выхода в Интернет:${NC} [V] Включить галочку"
+                    echo -e "  • ${BOLD}Закрытый ключ (Private Key):${NC}       ${CYAN}${sel_priv}${NC}"
+                    echo -e "  • ${BOLD}IP-адрес:${NC}                            ${CYAN}${net_ip}${NC}"
+                    echo -e "  • ${BOLD}Маска подсети:${NC}                       255.255.255.255"
+                    echo -e "  • ${BOLD}DNS-серверы:${NC}                         1.1.1.1, 8.8.8.8"
+                    echo ""
+                    echo -e "${BOLD}В блоке «Узлы» (Peers) нажмите «Добавить узел»:${NC}"
+                    echo -e "  • ${BOLD}Название узла:${NC}         OmniStack-Server"
+                    echo -e "  • ${BOLD}Открытый ключ (Public Key сервера):${NC} ${CYAN}${wg_server_pub}${NC}"
+                    echo -e "  • ${BOLD}Адрес узла (Endpoint):${NC} ${CYAN}${srv_host}${NC}"
+                    echo -e "  • ${BOLD}Порт узла:${NC}             ${CYAN}${wg_port}${NC}"
+                    echo -e "  • ${BOLD}Разрешенные подсети:${NC}   0.0.0.0/0"
+                    echo -e "  • ${BOLD}Проверка активности:${NC}   25 сек"
+                    echo ""
+                    echo -e "${BOLD}Команды для терминала Keenetic CLI (ndm):${NC}"
+                    cat << KEENET_EOF
+interface Wireguard0
+    description OmniStack
+    ip address ${net_ip} 255.255.255.255
+    wireguard private-key ${sel_priv}
+    wireguard peer ${wg_server_pub} endpoint ${srv_host} ${wg_port}
+    wireguard peer ${wg_server_pub} keepalive 25
+    wireguard peer ${wg_server_pub} prefix 0.0.0.0 0.0.0.0
+    up
+system configuration save
+KEENET_EOF
+                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                    echo ""
+                    read -rp "Нажмите Enter для продолжения..." _
+                    ;;
+                5)
+                    local net_ip="${sel_ip%/*}"
+                    echo ""
+                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                    echo -e "${BOLD}Конфигурация для Mihomo / Clash.Meta (вставка в блок proxies):${NC}"
+                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                    cat << MIHOMO_EOF
+
+proxies:
+  - name: "OmniStack-WireGuard"
+    type: wireguard
+    server: "${srv_host}"
+    port: ${wg_port}
+    ip: "${net_ip}"
+    public-key: "${wg_server_pub}"
+    private-key: "${sel_priv}"
+    udp: true
+    remote-dns-resolve: true
+    dns:
+      - "1.1.1.1"
+      - "8.8.8.8"
+    mtu: 1420
+
+MIHOMO_EOF
+                    echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                    msg_inf "Скопируйте этот блок в ваш файл config.yaml (Mihomo / Clash.Meta / xkeen)."
+                    echo ""
+                    read -rp "Нажмите Enter для продолжения..." _
+                    ;;
+                6)
                     echo ""
                     echo -e "${BOLD}${CYAN}Привязка внешнего публичного ключа:${NC}"
-                    echo -e "Если вы сгенерировали пару ключей непосредственно на MikroTik или другом клиенте,"
+                    echo -e "Если вы сгенерировали пару ключей непосредственно на роутере (Keenetic, MikroTik и др.),"
                     echo -e "вставьте сгенерированный там Public Key ниже:"
                     read -rp "Введите Public Key клиента: " user_wg_pub
                     user_wg_pub=$(echo "$user_wg_pub" | tr -d '[:space:]')
