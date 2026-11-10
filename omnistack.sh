@@ -2164,7 +2164,7 @@ GOOGLE_AI_DOMAINS = [
 GROUPS = {
     "1": {
         "name": "YouTube",
-        "geosites": ["geosite:youtube", "geosite:googlevideo"],
+        "geosites": ["geosite:youtube"],
         "domains": ["googlevideo.com", "youtube.com", "youtu.be", "ytimg.com"]
     },
     "2": {
@@ -2179,8 +2179,8 @@ GROUPS = {
     },
     "4": {
         "name": "Other Messengers (WhatsApp, Signal, Viber, Skype, Element)",
-        "geosites": ["geosite:whatsapp", "geosite:signal", "geosite:viber", "geosite:skype"],
-        "domains": ["matrix.org", "element.io"]
+        "geosites": ["geosite:whatsapp", "geosite:signal", "geosite:viber"],
+        "domains": ["matrix.org", "element.io", "skype.com", "skypeassets.com"]
     },
     "5": {
         "name": "Social Networks (X/Twitter, Instagram, Facebook, Meta, TikTok, LinkedIn)",
@@ -2202,7 +2202,7 @@ GROUPS = {
 xray_rules = []
 clash_rules = []
 direct_sites = [
-    "geosite:ru", "domain:ru", "domain:su", "domain:xn--p1ai",
+    "geosite:category-ru", "domain:ru", "domain:su", "domain:xn--p1ai",
     "geosite:category-gov-ru", "domain:gosuslugi.ru", "domain:sberbank.ru",
     "domain:tinkoff.ru", "domain:t-bank.ru", "domain:vtb.ru",
     "domain:alfabank.ru", "domain:yandex.ru", "domain:ya.ru",
