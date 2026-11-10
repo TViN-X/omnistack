@@ -1556,6 +1556,7 @@ CLEANUP_PREVIOUS_INSTALL() {
 
         # 7. Очистка старых алиасов x-ui-pro
         rm -f /usr/local/bin/x-ui-setup /usr/bin/x-ui-setup
+        rm -f /usr/local/bin/omnistack /usr/bin/omnistack /usr/local/bin/omnistack-tg /usr/bin/omnistack-tg
         rm -f /usr/local/bin/x-ui-backup.sh /usr/local/bin/x-ui-geodata-update.sh
         rm -rf /usr/local/x-ui-pro
 
@@ -3531,6 +3532,7 @@ fi
 chmod +x /usr/local/omnistack/omnistack.sh 2>/dev/null || true
 ln -sf /usr/local/omnistack /usr/local/x-ui-pro 2>/dev/null || true
 
+rm -f /usr/local/bin/omnistack /usr/bin/omnistack
 cat > /usr/local/bin/omnistack << 'EOF'
 #!/bin/bash
 if [[ -f /usr/local/omnistack/omnistack.sh ]]; then
