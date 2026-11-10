@@ -1732,12 +1732,16 @@ if [[ "$SERVER_ROLE" == "cascade" || "$SERVER_ROLE" == "standalone" ]]; then
         for ((i=1; i<=CASCADE_COUNT; i++)); do
             echo -e "  ${CYAN}[$i]${NC} ${CASCADE_ALIASES[$i]} (${CASCADE_TAGS[$i]})"
         done
-        echo ""
-        echo -e "Выберите профиль настройки:"
-        echo -e "  [1] Рекомендуемый профиль (Все группы 1-7 направляются на ${CASCADE_ALIASES[1]})"
-        echo -e "  [2] Индивидуальное распределение каждой группы"
-        read -rp "Ваш выбор [1/2, Enter = 1]: " grp_mode_in
-        grp_mode_in="${grp_mode_in:-1}"
+        if [[ -t 0 ]]; then
+            echo ""
+            echo -e "Выберите профиль настройки:"
+            echo -e "  [1] Рекомендуемый профиль (Все группы 1-7 направляются на ${CASCADE_ALIASES[1]})"
+            echo -e "  [2] Индивидуальное распределение каждой группы"
+            read -rp "Ваш выбор [1/2, Enter = 1]: " grp_mode_in
+            grp_mode_in="${grp_mode_in:-1}"
+        else
+            grp_mode_in="1"
+        fi
 
         if [[ "$grp_mode_in" == "2" ]]; then
             for g in 1 2 3 4 5 6 7; do
@@ -1759,9 +1763,13 @@ if [[ "$SERVER_ROLE" == "cascade" || "$SERVER_ROLE" == "standalone" ]]; then
         fi
     else
         # Standalone (RU)
-        echo -e "Направление для сервисов: по умолчанию все разрешены напрямую (DIRECT)."
-        echo -e "Хотите заблокировать конкретные сервисы? [y/N]: "
-        read -rp "Выбор [y/N, Enter = N]: " block_in
+        if [[ -t 0 ]]; then
+            echo -e "Направление для сервисов: по умолчанию все разрешены напрямую (DIRECT)."
+            echo -e "Хотите заблокировать конкретные сервисы? [y/N]: "
+            read -rp "Выбор [y/N, Enter = N]: " block_in
+        else
+            block_in="n"
+        fi
         if [[ "$block_in" =~ ^[Yy]$ ]]; then
             for g in 1 2 3 4 5 6 7; do
                 gname="${GROUP_NAMES[$g]}"
