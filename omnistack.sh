@@ -3522,7 +3522,9 @@ systemctl restart x-ui 2>/dev/null || true
 msg_step "Installing omnistack CLI command..."
 mkdir -p /usr/local/omnistack
 if [[ -f "$0" && "$0" != "/dev/fd/"* ]]; then
-    cp -f "$0" /usr/local/omnistack/omnistack.sh
+    if [[ "$(readlink -f "$0" 2>/dev/null)" != "/usr/local/omnistack/omnistack.sh" ]]; then
+        cp -f "$0" /usr/local/omnistack/omnistack.sh 2>/dev/null || true
+    fi
 else
     curl -Ls https://raw.githubusercontent.com/TViN-X/omnistack/master/omnistack.sh -o /usr/local/omnistack/omnistack.sh 2>/dev/null || true
 fi
