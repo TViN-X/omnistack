@@ -2783,7 +2783,8 @@ INSERT INTO "settings" ("key", "value") VALUES ("subClashPath", '/clash/');
 INSERT INTO "settings" ("key", "value") VALUES ("subClashURI", 'https://${domain}/clash/');
 INSERT INTO "settings" ("key", "value") VALUES ("subClashAutoDetect", 'true');
 INSERT INTO "settings" ("key", "value") VALUES ("subClashEnableRouting", 'true');
-INSERT INTO "settings" ("key", "value") VALUES ("subClashRules", '- GEOSITE,category-ads-all,REJECT${ADDITIONAL_CLASH_RULES}
+INSERT INTO "settings" ("key", "value") VALUES ("subClashRules", '- GEOSITE,category-ads-all,REJECT
+${ADDITIONAL_CLASH_RULES}
 - DOMAIN-SUFFIX,ru,DIRECT
 - DOMAIN-SUFFIX,su,DIRECT
 - DOMAIN-SUFFIX,xn--p1ai,DIRECT
