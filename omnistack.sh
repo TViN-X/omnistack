@@ -2659,7 +2659,7 @@ elif [[ "$SERVER_ROLE" == "cascade" ]]; then
       },
       {\"type\": \"field\", \"ip\": [\"geoip:ru\"], \"outboundTag\": \"direct\"},
       {\"type\": \"field\", \"protocol\": [\"bittorrent\"], \"outboundTag\": \"blocked\"},
-      {\"type\": \"field\", \"network\": \"tcp,udp\", \"outboundTag\": \"cascade-out\"}
+      {\"type\": \"field\", \"network\": \"tcp,udp\", \"outboundTag\": \"${DEFAULT_CASCADE_TAG:-cascade-out-1}\"}
     ]
   },
   \"outbounds\": [
