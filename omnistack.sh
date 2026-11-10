@@ -3173,6 +3173,7 @@ server {
     server_name ${domain};
     listen 7443 ssl http2 proxy_protocol;
     listen [::]:7443 ssl http2 proxy_protocol;
+    port_in_redirect off;
 
     set_real_ip_from 127.0.0.1;
     set_real_ip_from ::1;
@@ -3208,7 +3209,7 @@ server {
         proxy_pass https://127.0.0.1:${panel_port};
     }
     location /${panel_path} {
-        rewrite ^ /${panel_path}/ permanent;
+        return 301 https://\$host/${panel_path}/;
     }
 
     include /etc/nginx/snippets/includes.conf;
