@@ -3222,6 +3222,11 @@ EOF
 
 # 3. Includes Snippets for Subscriptions & Proxy Forwarding
 cat > "/etc/nginx/snippets/includes.conf" << EOF
+    # Proxy Buffers for Large Headers (e.g. Subscriptions & Routing Rules)
+    proxy_buffer_size 128k;
+    proxy_buffers 4 256k;
+    proxy_busy_buffers_size 256k;
+
     # Sub2sing-box Converter
     location /${sub2singbox_path}/ {
         proxy_redirect off;
